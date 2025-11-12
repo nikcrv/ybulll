@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yield Basis</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="ethers.min.js"></script>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <span class="brand-name">Yield Basis</span>
+            </div>
+            <div class="nav-actions">
+                <button class="btn-connect" id="connectWallet">
+                    Connect Wallet
+                </button>
+                <div class="wallet-connected" id="walletConnected" style="display: none;">
+                    <div class="wallet-info">
+                        <span class="wallet-balance" id="walletBalance">0.00 ETH</span>
+                        <button class="wallet-address-btn" id="walletAddressBtn">
+                            <span id="walletAddress">0x0000...0000</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <section class="hero-section">
+            <div class="hero-container">
+                <h1 class="hero-title">veYB NFT Marketplace</h1>
+                <p class="hero-subtitle">List and trade your veYB tokens</p>
+            </div>
+        </section>
+
+        <!-- Seller Actions Section -->
+        <section class="seller-section" id="sellerSection" style="display: none;">
+            <div class="section-container">
+                <h2 class="section-title">Sell Your veYB NFT</h2>
+
+                <div class="action-card">
+                    <div class="card-header">
+                        <div class="step-badge">Step 1</div>
+                        <h3>Approve Marketplace</h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-description">
+                            First, you need to approve the marketplace contract to manage your veYB NFTs. This is a one-time approval.
+                        </p>
+                        <div class="approval-status" id="approvalStatus">
+                            <div class="status-loading">
+                                <div class="spinner"></div>
+                                <span>Checking approval status...</span>
+                            </div>
+                        </div>
+                        <button class="btn-primary btn-large" id="approveBtn" disabled>
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                                <path d="M10 2L12 8H18L13 12L15 18L10 14L5 18L7 12L2 8H8L10 2Z" fill="currentColor"/>
+                            </svg>
+                            Approve Marketplace
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Create Listing -->
+                <div class="action-card" id="listingCard" style="display: none;">
+                    <div class="card-header">
+                        <div class="step-badge">Step 2</div>
+                        <h3>Create Listing</h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-description">
+                            Set your price and create a listing on the marketplace. Your veYB NFT will be available for purchase.
+                        </p>
+
+                        <div class="form-group">
+                            <label for="priceInput" class="form-label">Price (ETH)</label>
+                            <div class="input-wrapper">
+                                <input
+                                    type="number"
+                                    id="priceInput"
+                                    class="form-input"
+                                    placeholder="0.0005"
+                                    step="0.0001"
+                                    min="0"
+                                />
+                                <span class="input-suffix">ETH</span>
+                            </div>
+                            <span class="form-hint">Minimum: 0.0001 ETH</span>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="durationInput" class="form-label">Listing Duration</label>
+                            <select id="durationInput" class="form-select">
+                                <option value="7">7 Days</option>
+                                <option value="14">14 Days</option>
+                                <option value="30" selected>30 Days</option>
+                                <option value="60">60 Days</option>
+                                <option value="90">90 Days</option>
+                            </select>
+                        </div>
+
+                        <div class="listing-preview" id="listingPreview">
+                            <div class="preview-item">
+                                <span class="preview-label">You will receive:</span>
+                                <span class="preview-value" id="receiveAmount">0 ETH</span>
+                            </div>
+                            <div class="preview-item">
+                                <span class="preview-label">Listing expires:</span>
+                                <span class="preview-value" id="expiryDate">-</span>
+                            </div>
+                        </div>
+
+                        <button class="btn-primary btn-large" id="createListingBtn">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                                <path d="M10 4V16M4 10H16" stroke="currentColor" stroke-width="2"/>
+                            </svg>
+                            Create Listing
+                        </button>
+                    </div>
+                </div>
+
+                <div class="info-panel">
+                    <div class="info-item">
+                        <span class="info-label">veYB NFT Contract:</span>
+                        <span class="info-value">
+                            <a href="https://etherscan.io/address/0x8235c179E9e84688FBd8B12295EfC26834dAC211" target="_blank">
+                                0x8235...dAC211
+                            </a>
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Marketplace Contract:</span>
+                        <span class="info-value">
+                            <a href="https://etherscan.io/address/0x0000000000000068F116a894984e2DB1123eB395" target="_blank">
+                                0x0000...eB395
+                            </a>
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Locked YB Amount:</span>
+                        <span class="info-value" id="nftBalance">-</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- My Listing Dashboard (for sellers) -->
+        <section class="dashboard-section" id="myListingSection" style="display: none;">
+            <div class="section-container">
+                <h2 class="section-title">My Active Listing</h2>
+                <div id="myListingContainer"></div>
+            </div>
+        </section>
+
+        <!-- Marketplace (for buyers) -->
+        <section class="marketplace-section" id="marketplaceSection" style="display: none;">
+            <div class="section-container">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+                    <h2 class="section-title" style="margin: 0;">Available veYB NFTs</h2>
+                    <label style="display: flex; align-items: center; gap: 10px; color: var(--text-secondary); font-size: 14px;">
+                        <input type="checkbox" id="showAllListings" onchange="toggleListingView()">
+                        Show my own listings
+                    </label>
+                </div>
+                <div id="marketplaceListings"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Wallet Selection Modal -->
+    <div class="modal" id="walletModal" style="display: none;">
+        <div class="modal-overlay" onclick="closeModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Connect Wallet</h3>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <button class="wallet-option" onclick="connectWallet()">
+                    <div class="wallet-option-info">
+                        <span class="wallet-name">Browser Wallet</span>
+                        <span class="wallet-desc">MetaMask, Rabby, Coinbase</span>
+                    </div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script src="app.js"></script>
+    <script src="listing.js"></script>
+    <script src="marketplace.js"></script>
+</body>
+</html>

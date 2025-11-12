@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Yield Basis</title>
+    <title>YBull veYB NFT Marketplace</title>
     <link rel="stylesheet" href="styles.css">
     <script src="ethers.min.js"></script>
 </head>
@@ -12,7 +12,7 @@
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-brand">
-                <span class="brand-name">Yield Basis</span>
+                <span class="brand-name">YBull</span>
             </div>
             <div class="nav-actions">
                 <button class="btn-connect" id="connectWallet">
@@ -154,7 +154,7 @@
         <!-- My Listing Dashboard (for sellers) -->
         <section class="dashboard-section" id="myListingSection" style="display: none;">
             <div class="section-container">
-                <h2 class="section-title">My Active Listing</h2>
+                <h2 class="section-title">My Active Listings</h2>
                 <div id="myListingContainer"></div>
             </div>
         </section>
@@ -162,13 +162,7 @@
         <!-- Marketplace (for buyers) -->
         <section class="marketplace-section" id="marketplaceSection" style="display: none;">
             <div class="section-container">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
-                    <h2 class="section-title" style="margin: 0;">Available veYB NFTs</h2>
-                    <label style="display: flex; align-items: center; gap: 10px; color: var(--text-secondary); font-size: 14px;">
-                        <input type="checkbox" id="showAllListings" onchange="toggleListingView()">
-                        Show my own listings
-                    </label>
-                </div>
+                <h2 class="section-title">Available veYB NFTs</h2>
                 <div id="marketplaceListings"></div>
             </div>
         </section>

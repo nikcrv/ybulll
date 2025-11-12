@@ -172,10 +172,10 @@ async function initializeWallet(address) {
 
         // Load dashboard and marketplace
         if (typeof showSellerDashboard === 'function') {
-            showSellerDashboard();
+            await showSellerDashboard();
         }
         if (typeof showMarketplace === 'function') {
-            showMarketplace();
+            await showMarketplace();
         }
 
     } catch (error) {

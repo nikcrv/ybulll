@@ -1,32 +1,366 @@
+// Loading flags to prevent duplicate calls
+let isLoadingSellerDashboard = false;
+let isLoadingMarketplace = false;
+
+// Cache for loaded data
+let cachedSellerListings = null;
+let cachedMarketplaceListings = null;
+
+// Cache for all blockchain events (shared between marketplace and seller dashboard)
+let cachedBlockchainEvents = null;
+
+// Current scan depth (in blocks)
+let currentScanDepth = 100000; // Default: 14 days
+
+// Current sort option
+let currentSort = 'pricePerVeYB'; // Default: price per veYB
+
 // Display seller's listing dashboard
-async function showSellerDashboard() {
+async function showSellerDashboard(forceReload = false) {
+    // If data is cached and not forcing reload, use cached data
+    if (cachedSellerListings !== null && !forceReload) {
+        console.log('Using cached seller listings');
+        displaySellerListings(cachedSellerListings);
+        return;
+    }
+
+    if (isLoadingSellerDashboard) {
+        console.log('Seller dashboard already loading, skipping...');
+        return;
+    }
+
     console.log('Checking for listings of:', userAddress);
 
-    // Get all listings from localStorage
-    const allListings = JSON.parse(localStorage.getItem('veybListings') || '[]');
+    if (!ethersProvider || !userAddress) {
+        console.log('No provider or address');
+        return;
+    }
 
-    // Filter for current user's active listings
-    const myListings = allListings.filter(l =>
-        l.active && l.seller.toLowerCase() === userAddress.toLowerCase()
+    // Show loading state
+    const container = document.getElementById('myListingContainer');
+    container.innerHTML = `
+        <div class="empty-state">
+            <div class="spinner" style="width: 48px; height: 48px; border-width: 4px; margin: 0 auto 20px;"></div>
+            <h3>Loading your listings...</h3>
+            <p id="sellerProgress">Fetching your active veYB NFT listings...</p>
+        </div>
+    `;
+
+    isLoadingSellerDashboard = true;
+
+    // Use cached blockchain events if available
+    if (!cachedBlockchainEvents || !Array.isArray(cachedBlockchainEvents)) {
+        console.log('No cached events available. Showing empty state.');
+        isLoadingSellerDashboard = false;
+        cachedSellerListings = [];
+        displaySellerListings([]);
+        return;
+    }
+
+    // Filter cached events by user address
+    const blockchainOrders = cachedBlockchainEvents.filter(event =>
+        event.args.orderParameters.offerer.toLowerCase() === userAddress.toLowerCase()
     );
+    console.log(`Found ${blockchainOrders.length} orders for user from cached events`);
 
-    // Sort by createdAt (newest first)
+    if (blockchainOrders.length === 0) {
+        console.log('No active listings found for this address');
+        isLoadingSellerDashboard = false;
+        cachedSellerListings = [];
+        displaySellerListings([]);
+        return;
+    }
+
+    const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, SEAPORT_ABI, ethersProvider);
+    const currentCounter = await seaportContract.getCounter(userAddress);
+    console.log('Current counter for user:', currentCounter.toString());
+
+    // Helper function to check if order can be fulfilled by validating counter directly
+    async function isOrderFulfillable(orderParams, orderHash, currentCounter) {
+        try {
+            // Use Seaport's getOrderHash to compute hash with current counter
+            const getOrderHashABI = [{
+                "inputs": [{
+                    "components": [
+                        {"internalType": "address", "name": "offerer", "type": "address"},
+                        {"internalType": "address", "name": "zone", "type": "address"},
+                        {
+                            "components": [
+                                {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                {"internalType": "address", "name": "token", "type": "address"},
+                                {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
+                            ],
+                            "internalType": "struct OfferItem[]",
+                            "name": "offer",
+                            "type": "tuple[]"
+                        },
+                        {
+                            "components": [
+                                {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                {"internalType": "address", "name": "token", "type": "address"},
+                                {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
+                                {"internalType": "address payable", "name": "recipient", "type": "address"}
+                            ],
+                            "internalType": "struct ConsiderationItem[]",
+                            "name": "consideration",
+                            "type": "tuple[]"
+                        },
+                        {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
+                        {"internalType": "uint256", "name": "startTime", "type": "uint256"},
+                        {"internalType": "uint256", "name": "endTime", "type": "uint256"},
+                        {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
+                        {"internalType": "uint256", "name": "salt", "type": "uint256"},
+                        {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
+                        {"internalType": "uint256", "name": "counter", "type": "uint256"}
+                    ],
+                    "internalType": "struct OrderComponents",
+                    "name": "orderComponents",
+                    "type": "tuple"
+                }],
+                "name": "getOrderHash",
+                "outputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
+                "stateMutability": "view",
+                "type": "function"
+            }];
+
+            const hashContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderHashABI, ethersProvider);
+
+            // Build OrderComponents with current counter
+            const orderComponents = {
+                offerer: orderParams.offerer,
+                zone: orderParams.zone,
+                offer: orderParams.offer,
+                consideration: orderParams.consideration,
+                orderType: orderParams.orderType,
+                startTime: orderParams.startTime,
+                endTime: orderParams.endTime,
+                zoneHash: orderParams.zoneHash,
+                salt: orderParams.salt,
+                conduitKey: orderParams.conduitKey,
+                counter: currentCounter
+            };
+
+            // Calculate what the order hash would be with current counter
+            const computedHash = await hashContract.getOrderHash(orderComponents);
+
+            // Compare with actual order hash from event
+            if (computedHash.toLowerCase() === orderHash.toLowerCase()) {
+                console.log(`Order ${orderHash?.slice(0, 10)}... is FULFILLABLE ✓ (counter matches)`);
+                return true;
+            } else {
+                console.log(`Order ${orderHash?.slice(0, 10)}... NOT fulfillable - Counter mismatch (order created with old counter)`);
+                console.log(`  Expected hash: ${computedHash.slice(0, 20)}...`);
+                console.log(`  Actual hash:   ${orderHash.slice(0, 20)}...`);
+                return false;
+            }
+        } catch (error) {
+            console.log(`Order ${orderHash?.slice(0, 10)}... NOT fulfillable - Error:`, error.reason || error.message || error.code);
+            return false;
+        }
+    }
+
+    // Get order status ABI
+    const getOrderStatusABI = [{
+        "inputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
+        "name": "getOrderStatus",
+        "outputs": [
+            {"internalType": "bool", "name": "isValidated", "type": "bool"},
+            {"internalType": "bool", "name": "isCancelled", "type": "bool"},
+            {"internalType": "uint256", "name": "totalFilled", "type": "uint256"},
+            {"internalType": "uint256", "name": "totalSize", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }];
+
+    const statusContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
+
+    // Cache for seller's own data (only one seller, so simple variable)
+    const nftContract = new ethers.Contract(VEYB_NFT_ADDRESS, ERC721_ABI, ethersProvider);
+    const lockedData = await nftContract.locked(userAddress);
+    const userLockedAmount = lockedData.amount;
+    const userLockEnd = lockedData.end;
+
+    // Helper function to process a single seller order
+    async function processSellerOrder(event) {
+        const orderHash = event.args.orderHash;
+        const orderParams = event.args.orderParameters;
+
+        // Filter: Only show orders with YB token payment (not ETH or other tokens)
+        if (orderParams.consideration.length === 0 ||
+            orderParams.consideration[0].token.toLowerCase() !== YB_TOKEN_ADDRESS.toLowerCase()) {
+            const paymentToken = orderParams.consideration.length > 0
+                ? orderParams.consideration[0].token
+                : 'none';
+            console.log(`Order ${orderHash.slice(0, 10)}... - Not YB payment (token: ${paymentToken}), skipping`);
+            return null;
+        }
+
+        try {
+            // Quick checks first using seller's cached data
+            const now = Math.floor(Date.now() / 1000);
+
+            // Check if lock is active
+            if (userLockEnd.lte(now)) {
+                console.log(`Order ${orderHash.slice(0, 10)}... - Lock expired, skipping`);
+                return null;
+            }
+
+            // Check if locked amount is > 0
+            if (userLockedAmount.eq(0)) {
+                console.log(`Order ${orderHash.slice(0, 10)}... - No locked amount, skipping`);
+                return null;
+            }
+
+            // Check order status
+            const status = await statusContract.getOrderStatus(orderHash);
+            const isCancelled = status.isCancelled;
+            const isFilled = status.totalFilled.gte(status.totalSize) && status.totalSize.gt(0);
+
+            // Show all orders that getOrderStatus says are active
+            const isActive = status.isValidated && !isCancelled && !isFilled;
+
+            if (!isActive) return null;
+
+            // Check if order can actually be fulfilled (validates counter directly)
+            const isFulfillable = await isOrderFulfillable(orderParams, orderHash, currentCounter);
+
+            console.log(`Order ${orderHash.slice(0, 10)}... - Cancelled: ${isCancelled}, Filled: ${isFilled}, Active: ${isActive}, Fulfillable: ${isFulfillable}`);
+
+            if (!isFulfillable) return null;
+
+            // Format locked amount
+            const lockedAmount = parseFloat(ethers.utils.formatEther(userLockedAmount.abs())).toFixed(2);
+
+            // Extract price from consideration
+            const priceInWei = orderParams.consideration[0].startAmount;
+            const price = parseFloat(ethers.utils.formatEther(priceInWei));
+
+            // Get listing start time (convert BigNumber to number)
+            let startTime = orderParams.startTime;
+            if (startTime && startTime.toNumber) {
+                startTime = startTime.toNumber();
+            } else if (startTime && startTime._hex) {
+                startTime = parseInt(startTime._hex, 16);
+            }
+
+            return {
+                orderHash: orderHash,
+                orderParameters: orderParams,
+                price: price,
+                seller: orderParams.offerer,
+                tokenId: orderParams.offer[0].identifierOrCriteria.toString(),
+                lockedAmount: lockedAmount,
+                createdAt: startTime,
+                txHash: event.transactionHash,
+                active: true
+            };
+        } catch (error) {
+            console.error('Error processing order:', error);
+            return null;
+        }
+    }
+
+    // Process all seller orders in parallel batches
+    const myListings = [];
+    const BATCH_SIZE = 100; // Process 100 seller orders at a time
+    const totalBatches = Math.ceil(blockchainOrders.length / BATCH_SIZE);
+    const sellerProgressEl = document.getElementById('sellerProgress');
+
+    for (let i = 0; i < blockchainOrders.length; i += BATCH_SIZE) {
+        const batch = blockchainOrders.slice(i, i + BATCH_SIZE);
+        const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
+
+        if (sellerProgressEl) {
+            sellerProgressEl.textContent = `Processing your orders: batch ${currentBatch} / ${totalBatches} (${myListings.length} active listings found)`;
+        }
+
+        console.log(`Processing seller batch ${currentBatch}/${totalBatches} (${batch.length} orders)`);
+
+        const results = await Promise.all(batch.map(event => processSellerOrder(event)));
+
+        // Filter out null results and add valid listings
+        const validListings = results.filter(listing => listing !== null);
+        myListings.push(...validListings);
+
+        console.log(`Seller batch complete: found ${validListings.length} valid listings`);
+    }
+
+    // Sort by block number (newest first)
     myListings.sort((a, b) => b.createdAt - a.createdAt);
 
     console.log('My active listings:', myListings.length);
     console.log('My active listing hashes:', myListings.map(l => l.orderHash));
 
-    if (myListings.length === 0) {
-        console.log('No active listings found for this address');
-        return;
-    }
+    // Cache the listings
+    cachedSellerListings = myListings;
+    isLoadingSellerDashboard = false;
 
+    // Display the listings
+    displaySellerListings(myListings);
+}
+
+// Function to display seller listings (uses cached data)
+async function displaySellerListings(myListings) {
     const section = document.getElementById('myListingSection');
     const container = document.getElementById('myListingContainer');
 
-    // Display all user's active listings
-    container.innerHTML = myListings.map(listing => {
-        const createdDate = new Date(listing.createdAt).toLocaleDateString();
+    // Check voting power if user has listings
+    let hasVotingPower = false;
+    let votingPowerWarning = '';
+
+    if (myListings.length > 0 && ethersProvider && userAddress) {
+        try {
+            const gaugeController = new ethers.Contract(GAUGE_CONTROLLER_ADDRESS, GAUGE_CONTROLLER_ABI, ethersProvider);
+            const transferAllowed = await gaugeController.ve_transfer_allowed(userAddress);
+            hasVotingPower = !transferAllowed; // If transfer NOT allowed, then has voting power
+
+            if (hasVotingPower) {
+                votingPowerWarning = `
+                    <div class="info-panel" style="margin-bottom: 24px; background: rgba(255, 193, 7, 0.1); border-color: rgba(255, 193, 7, 0.3);">
+                        <div style="padding: 16px;">
+                            <h3 style="margin: 0 0 12px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">⚠️ Active Voting Power Detected</h3>
+                            <p style="margin: 0 0 12px 0; color: var(--text-secondary); line-height: 1.6;">
+                                Your veYB NFT cannot be transferred or sold while it has active voting power. Buyers will not be able to complete the purchase until you reset your votes.
+                            </p>
+                            <p style="margin: 0 0 16px 0; color: var(--text-secondary); line-height: 1.6; font-size: 13px;">
+                                <strong>Note:</strong> You can only update votes on a gauge once every 10 days.
+                            </p>
+                            <div id="voteResetContainerListings" style="display: flex; gap: 12px;">
+                                <div class="spinner" style="width: 24px; height: 24px; border-width: 2px; margin: 0 auto;"></div>
+                                <p style="margin: 0; color: var(--text-secondary);">Checking last vote time...</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        } catch (error) {
+            console.error('Error checking voting power:', error);
+        }
+    }
+
+    if (myListings.length === 0) {
+        console.log('No active listings found for this address');
+        container.innerHTML = `
+            <div class="empty-state">
+                <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                    <circle cx="32" cy="32" r="30" stroke="currentColor" stroke-width="2"/>
+                    <path d="M32 20V32M32 38V40" stroke="currentColor" stroke-width="2"/>
+                </svg>
+                <h3>No active listings</h3>
+                <p>You don't have any active veYB NFT listings. Create one to get started!</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Display all user's active listings with voting power warning if applicable
+    container.innerHTML = votingPowerWarning + myListings.map(listing => {
+        const createdDate = new Date(listing.createdAt * 1000).toLocaleDateString();
 
         // Handle BigNumber endTime
         let endTimeValue = listing.orderParameters.endTime;
@@ -37,26 +371,28 @@ async function showSellerDashboard() {
         }
         const expiryDate = new Date(endTimeValue * 1000).toLocaleDateString();
 
-        const pricePerVeYB = listing.lockedAmount ? (listing.price / parseFloat(listing.lockedAmount)).toFixed(6) : 'N/A';
+        const pricePerVeYB = listing.lockedAmount ? (listing.price / parseFloat(listing.lockedAmount)).toFixed(4) : 'N/A';
 
         return `
             <div class="listing-card">
                 <div class="listing-header">
-                    <h3 class="listing-title">veYB NFT #${listing.tokenId.slice(0, 10)}...</h3>
+                    <h3 class="listing-title">
+                        veYB NFT #<a href="https://etherscan.io/nft/${VEYB_NFT_ADDRESS}/${listing.tokenId}" target="_blank" style="color: var(--primary); text-decoration: none;">${listing.tokenId.slice(0, 10)}...</a>
+                    </h3>
                     <span class="listing-status active">Active</span>
                 </div>
                 <div class="listing-details">
                     <div class="detail-item">
                         <span class="detail-label">Locked Amount</span>
-                        <span class="detail-value">${listing.lockedAmount ? parseFloat(listing.lockedAmount).toLocaleString() : 'N/A'} YB</span>
+                        <span class="detail-value">${listing.lockedAmount ? parseFloat(listing.lockedAmount).toLocaleString() : 'N/A'} veYB</span>
                     </div>
                     <div class="detail-item">
                         <span class="detail-label">Price</span>
-                        <span class="detail-value">${listing.price} ETH</span>
+                        <span class="detail-value">${listing.price.toFixed(4)} YB</span>
                     </div>
                     <div class="detail-item">
                         <span class="detail-label">Price per veYB</span>
-                        <span class="detail-value">${pricePerVeYB} ETH</span>
+                        <span class="detail-value">${pricePerVeYB} YB</span>
                     </div>
                     <div class="detail-item">
                         <span class="detail-label">Listed On</span>
@@ -68,12 +404,14 @@ async function showSellerDashboard() {
                     </div>
                     <div class="detail-item">
                         <span class="detail-label">Order Hash</span>
-                        <span class="detail-value" style="font-size: 12px; font-family: monospace;">${listing.orderHash ? listing.orderHash.slice(0, 16) + '...' : 'N/A'}</span>
+                        <a href="https://etherscan.io/tx/${listing.txHash}" target="_blank" class="detail-value" style="font-size: 12px; font-family: monospace; color: var(--primary); text-decoration: none;">
+                            ${listing.orderHash ? listing.orderHash.slice(0, 16) + '...' : 'N/A'}
+                        </a>
                     </div>
                 </div>
                 <div class="listing-actions">
-                    <button class="btn-cancel" onclick='cancelListingByHash(${JSON.stringify(listing).replace(/'/g, "&apos;")})'>Cancel Listing</button>
-                    <a href="https://etherscan.io/tx/${listing.txHash}" target="_blank" class="btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center; padding: 12px 24px; background: var(--bg-dark); color: var(--text-primary); border-radius: 10px; font-size: 14px; font-weight: 600;">
+                    <button class="btn-cancel no-hover-effect" onclick='cancelListingByHash(${JSON.stringify(listing).replace(/'/g, "&apos;")})'>Cancel All Listings</button>
+                    <a href="https://etherscan.io/tx/${listing.txHash}" target="_blank" class="btn-secondary no-hover-effect" style="text-decoration: none; display: inline-flex; align-items: center; padding: 12px 24px; background: var(--bg-dark); color: var(--text-primary); border-radius: 10px; font-size: 14px; font-weight: 600;">
                         View on Etherscan
                     </a>
                 </div>
@@ -81,7 +419,85 @@ async function showSellerDashboard() {
         `;
     }).join('');
 
-    section.style.display = 'block';
+    // Attach event listener for reset votes button if voting power warning is shown
+    if (hasVotingPower) {
+        setTimeout(async () => {
+            const container = document.getElementById('voteResetContainerListings');
+            if (!container) return;
+
+            // Check if getLastVoteTimestamp function is available
+            if (typeof getLastVoteTimestamp !== 'function') {
+                console.error('getLastVoteTimestamp function not found');
+                container.innerHTML = `
+                    <button id="resetVotesFromListingsBtn" class="btn-primary">
+                        Reset All Votes
+                    </button>
+                    <a href="https://yieldbasis.com/vote" target="_blank" class="btn-secondary no-hover-effect" style="display: inline-flex; align-items: center; text-decoration: none;">
+                        Go to Voting Page
+                    </a>
+                `;
+                return;
+            }
+
+            const lastVoteTime = await getLastVoteTimestamp(userAddress);
+            const now = Math.floor(Date.now() / 1000);
+            const tenDaysInSeconds = 10 * 24 * 60 * 60;
+            const timeSinceVote = now - lastVoteTime;
+            const timeRemaining = tenDaysInSeconds - timeSinceVote;
+
+            if (lastVoteTime === 0 || timeRemaining <= 0) {
+                // Can reset now
+                container.innerHTML = `
+                    <button id="resetVotesFromListingsBtn" class="btn-primary">
+                        Reset All Votes
+                    </button>
+                    <a href="https://yieldbasis.com/vote" target="_blank" class="btn-secondary no-hover-effect" style="display: inline-flex; align-items: center; text-decoration: none;">
+                        Go to Voting Page
+                    </a>
+                `;
+
+                const resetBtn = document.getElementById('resetVotesFromListingsBtn');
+                if (resetBtn && typeof resetAllVotes === 'function') {
+                    resetBtn.onclick = function(e) {
+                        e.preventDefault();
+                        resetAllVotes(this);
+                    };
+                }
+            } else {
+                // Must wait - show countdown
+                const updateCountdown = () => {
+                    const now = Math.floor(Date.now() / 1000);
+                    const remaining = tenDaysInSeconds - (now - lastVoteTime);
+
+                    if (remaining <= 0) {
+                        // Time's up - reload listings
+                        if (typeof showSellerDashboard === 'function') {
+                            cachedSellerListings = null;
+                            showSellerDashboard(true);
+                        }
+                        return;
+                    }
+
+                    const timeStr = typeof formatTimeRemaining === 'function' ? formatTimeRemaining(remaining) : `${Math.floor(remaining / 86400)}d remaining`;
+                    container.innerHTML = `
+                        <div style="padding: 12px; background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 8px; flex: 1;">
+                            <p style="margin: 0 0 4px 0; font-size: 13px; color: var(--text-secondary);">Next vote reset available in:</p>
+                            <p style="margin: 0; font-size: 18px; font-weight: 700; color: var(--primary);">${timeStr}</p>
+                        </div>
+                        <a href="https://yieldbasis.com/vote" target="_blank" class="btn-secondary no-hover-effect" style="display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap;">
+                            Go to Voting Page
+                        </a>
+                    `;
+                };
+
+                updateCountdown();
+                // Update countdown every minute
+                setInterval(updateCountdown, 60000);
+            }
+        }, 0);
+    }
+
+    // Section visibility is controlled by switchTab()
 }
 
 // Toggle listing view
@@ -90,7 +506,8 @@ async function toggleListingView() {
 }
 
 // Get active orders from blockchain for a specific address
-async function getActiveOrdersFromBlockchain(offererAddress) {
+// maxBlocks: number of blocks to scan, or 0 to scan from beginning
+async function getActiveOrdersFromBlockchain(offererAddress, maxBlocks = 100000) {
     if (!ethersProvider) return [];
 
     try {
@@ -147,23 +564,29 @@ async function getActiveOrdersFromBlockchain(offererAddress) {
 
         const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, orderValidatedEventABI, ethersProvider);
 
-        // Get OrderValidated events for this offerer (last 10000 blocks)
+        // Get OrderValidated events
         const currentBlock = await ethersProvider.getBlockNumber();
-        const fromBlock = Math.max(0, currentBlock - 10000);
+        const fromBlock = maxBlocks === 0 ? 0 : Math.max(0, currentBlock - maxBlocks);
 
-        console.log(`Fetching OrderValidated events from block ${fromBlock} to ${currentBlock}`);
+        if (maxBlocks === 0) {
+            console.log(`Fetching OrderValidated events from block ${fromBlock} to ${currentBlock} (entire blockchain)`);
+        } else {
+            console.log(`Fetching OrderValidated events from block ${fromBlock} to ${currentBlock} (${maxBlocks} blocks)`);
+        }
 
         const filter = seaportContract.filters.OrderValidated();
         const events = await seaportContract.queryFilter(filter, fromBlock, currentBlock);
 
         console.log(`Found ${events.length} OrderValidated events total`);
 
-        // Filter events for this specific offerer
+        // Filter events for this specific offerer and YB token payment only
         const offererEvents = events.filter(e =>
-            e.args.orderParameters.offerer.toLowerCase() === offererAddress.toLowerCase()
+            e.args.orderParameters.offerer.toLowerCase() === offererAddress.toLowerCase() &&
+            e.args.orderParameters.consideration.length > 0 &&
+            e.args.orderParameters.consideration[0].token.toLowerCase() === YB_TOKEN_ADDRESS.toLowerCase()
         );
 
-        console.log(`Found ${offererEvents.length} orders for address ${offererAddress}`);
+        console.log(`Found ${offererEvents.length} YB orders for address ${offererAddress}`);
 
         return offererEvents;
     } catch (error) {
@@ -173,37 +596,137 @@ async function getActiveOrdersFromBlockchain(offererAddress) {
 }
 
 // Display marketplace listings
-async function showMarketplace() {
-    let listings = JSON.parse(localStorage.getItem('veybListings') || '[]');
-
-    // Clean up invalid listings (those without orderHash)
-    const validListings = listings.filter(l => l.orderHash !== null && l.orderHash !== undefined);
-    if (validListings.length !== listings.length) {
-        console.log(`Removed ${listings.length - validListings.length} invalid listings without orderHash`);
-        listings = validListings;
-        localStorage.setItem('veybListings', JSON.stringify(listings));
+async function showMarketplace(forceReload = false) {
+    // If data is cached and not forcing reload, use cached data
+    if (cachedMarketplaceListings !== null && !forceReload) {
+        console.log('Using cached marketplace listings');
+        displayMarketplaceListings(cachedMarketplaceListings);
+        return;
     }
 
-    console.log('All listings from localStorage:', listings);
-    console.log('Current user:', userAddress);
+    if (isLoadingMarketplace) {
+        console.log('Marketplace already loading, skipping...');
+        return;
+    }
 
-    // Debug: show all orderHashes in localStorage
-    console.log('All orderHashes in localStorage:', listings.map(l => ({ hash: l.orderHash, active: l.active, seller: l.seller })));
+    console.log('Loading marketplace listings from blockchain...');
 
-    // Show only other people's listings (not own)
-    let activeListings = listings.filter(l =>
-        l.active && l.seller.toLowerCase() !== userAddress.toLowerCase()
-    );
+    if (!ethersProvider) {
+        console.log('No provider available');
+        return;
+    }
 
-    console.log('Active listings for marketplace (excluding own):', activeListings.length);
+    // Show loading state
+    const container = document.getElementById('marketplaceListings');
+    container.innerHTML = `
+        <div class="empty-state">
+            <div class="spinner" style="width: 48px; height: 48px; border-width: 4px; margin: 0 auto 20px;"></div>
+            <h3>Loading marketplace...</h3>
+            <p id="marketplaceProgress">Preparing to scan blockchain...</p>
+        </div>
+    `;
 
-    // Fetch user's orders from blockchain
-    if (ethersProvider && userAddress) {
-        console.log('Fetching orders from blockchain for:', userAddress);
-        const blockchainOrders = await getActiveOrdersFromBlockchain(userAddress);
+    isLoadingMarketplace = true;
+    let activeListings = [];
 
-        // Check status of blockchain orders and sync with localStorage
-        if (blockchainOrders.length > 0) {
+    // Fetch ALL orders from blockchain (last 100000 blocks)
+    if (ethersProvider) {
+        console.log('Fetching all marketplace orders from blockchain...');
+
+        try {
+            const orderValidatedEventABI = [{
+                "anonymous": false,
+                "inputs": [
+                    {"indexed": false, "internalType": "bytes32", "name": "orderHash", "type": "bytes32"},
+                    {
+                        "components": [
+                            {"internalType": "address", "name": "offerer", "type": "address"},
+                            {"internalType": "address", "name": "zone", "type": "address"},
+                            {
+                                "components": [
+                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                    {"internalType": "address", "name": "token", "type": "address"},
+                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
+                                ],
+                                "internalType": "struct OfferItem[]",
+                                "name": "offer",
+                                "type": "tuple[]"
+                            },
+                            {
+                                "components": [
+                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                    {"internalType": "address", "name": "token", "type": "address"},
+                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
+                                    {"internalType": "address payable", "name": "recipient", "type": "address"}
+                                ],
+                                "internalType": "struct ConsiderationItem[]",
+                                "name": "consideration",
+                                "type": "tuple[]"
+                            },
+                            {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
+                            {"internalType": "uint256", "name": "startTime", "type": "uint256"},
+                            {"internalType": "uint256", "name": "endTime", "type": "uint256"},
+                            {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
+                            {"internalType": "uint256", "name": "salt", "type": "uint256"},
+                            {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
+                            {"internalType": "uint256", "name": "totalOriginalConsiderationItems", "type": "uint256"}
+                        ],
+                        "indexed": false,
+                        "internalType": "struct OrderParameters",
+                        "name": "orderParameters",
+                        "type": "tuple"
+                    }
+                ],
+                "name": "OrderValidated",
+                "type": "event"
+            }];
+
+            const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, orderValidatedEventABI, ethersProvider);
+
+            const currentBlock = await ethersProvider.getBlockNumber();
+            const totalBlocks = currentScanDepth;
+            const fromBlock = Math.max(0, currentBlock - totalBlocks);
+            const chunkSize = 50000; // Scan 50k blocks at a time
+
+            console.log(`Fetching OrderValidated events from block ${fromBlock} to ${currentBlock} (${totalBlocks} blocks)`);
+
+            // Get ALL OrderValidated events in chunks to show progress
+            const filter = seaportContract.filters.OrderValidated();
+            let allEvents = [];
+
+            const progressEl = document.getElementById('marketplaceProgress');
+
+            for (let start = fromBlock; start < currentBlock; start += chunkSize) {
+                const end = Math.min(start + chunkSize, currentBlock);
+                const scannedBlocks = start - fromBlock;
+                const progressPercent = Math.floor((scannedBlocks / totalBlocks) * 100);
+
+                if (progressEl) {
+                    progressEl.textContent = `Scanning blocks ${scannedBlocks.toLocaleString()} / ${totalBlocks.toLocaleString()} (${progressPercent}%)`;
+                }
+
+                console.log(`Fetching events from block ${start} to ${end}`);
+                const chunkEvents = await seaportContract.queryFilter(filter, start, end);
+                allEvents = allEvents.concat(chunkEvents);
+                console.log(`Found ${chunkEvents.length} events in this chunk (total: ${allEvents.length})`);
+            }
+
+            const events = allEvents;
+
+            // Cache all events for reuse in seller dashboard
+            cachedBlockchainEvents = events;
+
+            if (progressEl) {
+                progressEl.textContent = `Found ${events.length} total events. Processing orders...`;
+            }
+
+            console.log(`Found ${events.length} total OrderValidated events`);
+
+            // Process orders
             const getOrderStatusABI = [{
                 "inputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
                 "name": "getOrderStatus",
@@ -217,221 +740,290 @@ async function showMarketplace() {
                 "type": "function"
             }];
 
-            const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
+            const statusContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
 
-            for (const event of blockchainOrders) {
+            // Get counter ABI
+            const getCounterABI = [{
+                "inputs": [{"internalType": "address", "name": "offerer", "type": "address"}],
+                "name": "getCounter",
+                "outputs": [{"internalType": "uint256", "name": "counter", "type": "uint256"}],
+                "stateMutability": "view",
+                "type": "function"
+            }];
+
+            // Cache for seller data (counter, balance, locked)
+            const sellerDataCache = new Map();
+
+            // Helper function to get seller data (cached)
+            async function getSellerData(sellerAddress) {
+                if (sellerDataCache.has(sellerAddress)) {
+                    return sellerDataCache.get(sellerAddress);
+                }
+
+                const getCounterABI = [{
+                    "inputs": [{"internalType": "address", "name": "offerer", "type": "address"}],
+                    "name": "getCounter",
+                    "outputs": [{"internalType": "uint256", "name": "counter", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }];
+                const counterContract = new ethers.Contract(MARKETPLACE_ADDRESS, getCounterABI, ethersProvider);
+                const nftContract = new ethers.Contract(VEYB_NFT_ADDRESS, ERC721_ABI, ethersProvider);
+
+                const [counter, balance, lockedData] = await Promise.all([
+                    counterContract.getCounter(sellerAddress),
+                    nftContract.balanceOf(sellerAddress),
+                    nftContract.locked(sellerAddress)
+                ]);
+
+                const data = {
+                    counter,
+                    balance,
+                    lockedAmount: lockedData.amount,
+                    lockEnd: lockedData.end
+                };
+
+                sellerDataCache.set(sellerAddress, data);
+                return data;
+            }
+
+            // Helper function to check if order can be fulfilled (validates counter automatically)
+            async function isOrderFulfillableMarketplace(orderParams, orderHash, sellerData) {
+                try {
+                    const offererCounter = sellerData.counter;
+
+                    // Use Seaport's getOrderHash to compute hash with current counter
+                    const getOrderHashABI = [{
+                        "inputs": [{
+                            "components": [
+                                {"internalType": "address", "name": "offerer", "type": "address"},
+                                {"internalType": "address", "name": "zone", "type": "address"},
+                                {
+                                    "components": [
+                                        {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                        {"internalType": "address", "name": "token", "type": "address"},
+                                        {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                        {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                        {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
+                                    ],
+                                    "internalType": "struct OfferItem[]",
+                                    "name": "offer",
+                                    "type": "tuple[]"
+                                },
+                                {
+                                    "components": [
+                                        {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                                        {"internalType": "address", "name": "token", "type": "address"},
+                                        {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                                        {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                                        {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
+                                        {"internalType": "address payable", "name": "recipient", "type": "address"}
+                                    ],
+                                    "internalType": "struct ConsiderationItem[]",
+                                    "name": "consideration",
+                                    "type": "tuple[]"
+                                },
+                                {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
+                                {"internalType": "uint256", "name": "startTime", "type": "uint256"},
+                                {"internalType": "uint256", "name": "endTime", "type": "uint256"},
+                                {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
+                                {"internalType": "uint256", "name": "salt", "type": "uint256"},
+                                {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
+                                {"internalType": "uint256", "name": "counter", "type": "uint256"}
+                            ],
+                            "internalType": "struct OrderComponents",
+                            "name": "orderComponents",
+                            "type": "tuple"
+                        }],
+                        "name": "getOrderHash",
+                        "outputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
+                        "stateMutability": "view",
+                        "type": "function"
+                    }];
+
+                    const hashContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderHashABI, ethersProvider);
+
+                    // Build OrderComponents with current counter
+                    const orderComponents = {
+                        offerer: orderParams.offerer,
+                        zone: orderParams.zone,
+                        offer: orderParams.offer,
+                        consideration: orderParams.consideration,
+                        orderType: orderParams.orderType,
+                        startTime: orderParams.startTime,
+                        endTime: orderParams.endTime,
+                        zoneHash: orderParams.zoneHash,
+                        salt: orderParams.salt,
+                        conduitKey: orderParams.conduitKey,
+                        counter: offererCounter
+                    };
+
+                    // Calculate what the order hash would be with current counter
+                    const computedHash = await hashContract.getOrderHash(orderComponents);
+
+                    // Compare with actual order hash from event
+                    if (computedHash.toLowerCase() === orderHash.toLowerCase()) {
+                        console.log(`Marketplace order ${orderHash?.slice(0, 10)}... is FULFILLABLE ✓ (counter matches)`);
+                        return true;
+                    } else {
+                        console.log(`Marketplace order ${orderHash?.slice(0, 10)}... NOT fulfillable - Counter mismatch`);
+                        return false;
+                    }
+                } catch (error) {
+                    console.log(`Marketplace order ${orderHash?.slice(0, 10)}... NOT fulfillable - Error:`, error.reason || error.message || error.code);
+                    return false;
+                }
+            }
+
+            // Helper function to process a single order
+            async function processOrder(event) {
                 const orderHash = event.args.orderHash;
                 const orderParams = event.args.orderParameters;
 
+                // Filter: Only show orders with YB token payment (not ETH or other tokens)
+                if (orderParams.consideration.length === 0 ||
+                    orderParams.consideration[0].token.toLowerCase() !== YB_TOKEN_ADDRESS.toLowerCase()) {
+                    const paymentToken = orderParams.consideration.length > 0
+                        ? orderParams.consideration[0].token
+                        : 'none';
+                    console.log(`Order ${orderHash.slice(0, 10)}... - Not YB payment (token: ${paymentToken}), skipping`);
+                    return null;
+                }
+
+                // Skip own orders
+                if (userAddress && orderParams.offerer.toLowerCase() === userAddress.toLowerCase()) {
+                    return null;
+                }
+
                 try {
-                    const status = await seaportContract.getOrderStatus(orderHash);
-                    const isCancelled = status.isCancelled;
-                    const isFilled = status.totalFilled.gte(status.totalSize) && status.totalSize.gt(0);
-                    const isActive = !isCancelled && !isFilled;
+                    // Get seller data (cached if already fetched for this seller)
+                    const sellerData = await getSellerData(orderParams.offerer);
 
-                    console.log(`Blockchain order ${orderHash} - Cancelled: ${isCancelled}, Filled: ${isFilled}, Active: ${isActive}`);
+                    // Check seller's voting power - skip if they have active voting power
+                    try {
+                        const gaugeController = new ethers.Contract(GAUGE_CONTROLLER_ADDRESS, GAUGE_CONTROLLER_ABI, ethersProvider);
+                        const transferAllowed = await gaugeController.ve_transfer_allowed(orderParams.offerer);
 
-                    // Check if this order is in localStorage
-                    const existsInDB = listings.find(l => l.orderHash === orderHash);
-
-                    if (isActive) {
-                        if (!existsInDB) {
-                            console.log('Found active order not in localStorage, adding it');
-
-                            // Get locked amount from veYB contract
-                            const nftContract = new ethers.Contract(VEYB_NFT_ADDRESS, ERC721_ABI, ethersProvider);
-                            let lockedAmount = 'N/A';
-                            try {
-                                const lockedData = await nftContract.locked(orderParams.offerer);
-                                const amount = lockedData.amount;
-                                lockedAmount = parseFloat(ethers.utils.formatEther(amount.abs())).toFixed(2);
-                            } catch (error) {
-                                console.error('Error getting locked amount:', error);
-                            }
-
-                            // Extract price from consideration
-                            const priceInWei = orderParams.consideration[0].startAmount;
-                            const price = parseFloat(ethers.utils.formatEther(priceInWei));
-
-                            // Get transaction hash from event
-                            const txHash = event.transactionHash;
-
-                            // Reconstruct listing data with proper orderParameters object
-                            const newListing = {
-                                orderHash: orderHash,
-                                orderParameters: {
-                                    offerer: orderParams.offerer,
-                                    zone: orderParams.zone,
-                                    offer: orderParams.offer,
-                                    consideration: orderParams.consideration,
-                                    orderType: orderParams.orderType,
-                                    startTime: orderParams.startTime,
-                                    endTime: orderParams.endTime,
-                                    zoneHash: orderParams.zoneHash,
-                                    salt: orderParams.salt,
-                                    conduitKey: orderParams.conduitKey,
-                                    totalOriginalConsiderationItems: orderParams.totalOriginalConsiderationItems
-                                },
-                                price: price,
-                                seller: orderParams.offerer,
-                                tokenId: orderParams.offer[0].identifierOrCriteria.toString(),
-                                lockedAmount: lockedAmount,
-                                createdAt: Date.now(), // We don't have exact time, use current
-                                txHash: txHash,
-                                active: true
-                            };
-
-                            listings.push(newListing);
-                            console.log('Added order to listings:', orderHash.slice(0, 10) + '...');
-
-                            // If this is current user's order, save to myListing
-                            if (orderParams.offerer.toLowerCase() === userAddress.toLowerCase()) {
-                                localStorage.setItem(`myListing_${userAddress}`, JSON.stringify(newListing));
-                            }
-                        } else if (!existsInDB.active) {
-                            console.log('Order exists in DB but marked inactive, reactivating');
-                            existsInDB.active = true;
+                        if (!transferAllowed) {
+                            console.log(`Order ${orderHash.slice(0, 10)}... - Seller has active voting power (transfer not allowed), skipping`);
+                            return null;
                         }
-                    } else {
-                        // Order is not active (cancelled or filled)
-                        if (existsInDB && existsInDB.active) {
-                            console.log('Order is cancelled/filled on-chain but still active in DB, deactivating');
-                            existsInDB.active = false;
-
-                            // Remove from myListing if it's user's listing
-                            if (orderParams.offerer.toLowerCase() === userAddress.toLowerCase()) {
-                                const myListing = localStorage.getItem(`myListing_${userAddress}`);
-                                if (myListing) {
-                                    const myListingData = JSON.parse(myListing);
-                                    if (myListingData.orderHash === orderHash) {
-                                        localStorage.removeItem(`myListing_${userAddress}`);
-                                        console.log('Removed cancelled/filled listing from myListing');
-                                    }
-                                }
-                            }
-                        }
+                    } catch (error) {
+                        console.log(`Order ${orderHash.slice(0, 10)}... - Error checking seller voting power:`, error);
+                        // Continue processing if voting power check fails
                     }
-                } catch (error) {
-                    console.error('Error checking order status:', error);
-                }
-            }
 
-            // Save updated listings to localStorage
-            localStorage.setItem('veybListings', JSON.stringify(listings));
-            console.log('Updated localStorage with blockchain orders');
-        }
+                    // Quick checks first using cached data
+                    // Check NFT balance
+                    if (sellerData.balance.eq(0)) {
+                        console.log(`Order ${orderHash.slice(0, 10)}... - Seller has no NFT, skipping`);
+                        return null;
+                    }
 
-        // Also check status of existing listings in localStorage that weren't found in recent events
-        const existingUserOrders = listings.filter(l =>
-            l.active &&
-            l.seller.toLowerCase() === userAddress.toLowerCase() &&
-            l.orderHash
-        );
+                    // Check if lock is active
+                    const now = Math.floor(Date.now() / 1000);
+                    if (sellerData.lockEnd.lte(now)) {
+                        console.log(`Order ${orderHash.slice(0, 10)}... - Lock expired, skipping`);
+                        return null;
+                    }
 
-        console.log(`Checking status of ${existingUserOrders.length} existing orders in localStorage`);
-        console.log('Existing order hashes:', existingUserOrders.map(l => l.orderHash));
+                    // Check if locked amount is > 0
+                    if (sellerData.lockedAmount.eq(0)) {
+                        console.log(`Order ${orderHash.slice(0, 10)}... - No locked amount, skipping`);
+                        return null;
+                    }
 
-        if (existingUserOrders.length > 0) {
-            const getOrderStatusABI = [{
-                "inputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
-                "name": "getOrderStatus",
-                "outputs": [
-                    {"internalType": "bool", "name": "isValidated", "type": "bool"},
-                    {"internalType": "bool", "name": "isCancelled", "type": "bool"},
-                    {"internalType": "uint256", "name": "totalFilled", "type": "uint256"},
-                    {"internalType": "uint256", "name": "totalSize", "type": "uint256"}
-                ],
-                "stateMutability": "view",
-                "type": "function"
-            }];
-
-            const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
-
-            for (const listing of existingUserOrders) {
-                try {
-                    const status = await seaportContract.getOrderStatus(listing.orderHash);
+                    // Now check order status (contract call)
+                    const status = await statusContract.getOrderStatus(orderHash);
                     const isCancelled = status.isCancelled;
                     const isFilled = status.totalFilled.gte(status.totalSize) && status.totalSize.gt(0);
-                    const isActive = !isCancelled && !isFilled;
 
-                    console.log(`Existing order ${listing.orderHash} - Cancelled: ${isCancelled}, Filled: ${isFilled}, Active: ${isActive}`);
+                    // Show all orders that getOrderStatus says are active
+                    const isActive = status.isValidated && !isCancelled && !isFilled;
 
-                    if (!isActive) {
-                        console.log('Deactivating cancelled/filled order from localStorage');
-                        listing.active = false;
+                    if (!isActive) return null;
+
+                    // Check if order can actually be fulfilled (validates counter using cached data)
+                    const isFulfillable = await isOrderFulfillableMarketplace(orderParams, orderHash, sellerData);
+
+                    if (!isFulfillable) return null;
+
+                    console.log(`Order ${orderHash.slice(0, 10)}... - Active: true`);
+
+                    // Format locked amount
+                    const lockedAmount = parseFloat(ethers.utils.formatEther(sellerData.lockedAmount.abs())).toFixed(2);
+
+                    // Extract price from consideration
+                    const priceInWei = orderParams.consideration[0].startAmount;
+                    const price = parseFloat(ethers.utils.formatEther(priceInWei));
+
+                    // Get listing start time (convert BigNumber to number)
+                    let startTime = orderParams.startTime;
+                    if (startTime && startTime.toNumber) {
+                        startTime = startTime.toNumber();
+                    } else if (startTime && startTime._hex) {
+                        startTime = parseInt(startTime._hex, 16);
                     }
+
+                    return {
+                        orderHash: orderHash,
+                        orderParameters: orderParams,
+                        price: price,
+                        seller: orderParams.offerer,
+                        tokenId: orderParams.offer[0].identifierOrCriteria.toString(),
+                        lockedAmount: lockedAmount,
+                        createdAt: startTime,
+                        txHash: event.transactionHash,
+                        active: true
+                    };
                 } catch (error) {
-                    console.error('Error checking existing order status:', error);
+                    console.error('Error processing order:', error);
+                    return null;
                 }
             }
 
-            // Save after checking existing orders
-            localStorage.setItem('veybListings', JSON.stringify(listings));
+            // Process all orders in parallel batches
+            const BATCH_SIZE = 100; // Process 100 orders at a time
+            const totalBatches = Math.ceil(events.length / BATCH_SIZE);
+
+            for (let i = 0; i < events.length; i += BATCH_SIZE) {
+                const batch = events.slice(i, i + BATCH_SIZE);
+                const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
+
+                if (progressEl) {
+                    progressEl.textContent = `Processing orders: batch ${currentBatch} / ${totalBatches} (${activeListings.length} valid listings found)`;
+                }
+
+                console.log(`Processing batch ${currentBatch}/${totalBatches} (${batch.length} orders)`);
+
+                const results = await Promise.all(batch.map(event => processOrder(event)));
+
+                // Filter out null results and add valid listings
+                const validListings = results.filter(listing => listing !== null);
+                activeListings.push(...validListings);
+
+                console.log(`Batch complete: found ${validListings.length} valid listings`);
+            }
+
+            console.log(`Found ${activeListings.length} active marketplace listings`);
+        } catch (error) {
+            console.error('Error fetching marketplace orders:', error);
+            isLoadingMarketplace = false;
         }
-
-        // Re-filter activeListings after all checks (only other people's listings)
-        activeListings = listings.filter(l =>
-            l.active && l.seller.toLowerCase() !== userAddress.toLowerCase()
-        );
     }
-
-    // Verify order status on-chain for listings from localStorage
-    if (ethersProvider && activeListings.length > 0) {
-        const getOrderStatusABI = [{
-            "inputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
-            "name": "getOrderStatus",
-            "outputs": [
-                {"internalType": "bool", "name": "isValidated", "type": "bool"},
-                {"internalType": "bool", "name": "isCancelled", "type": "bool"},
-                {"internalType": "uint256", "name": "totalFilled", "type": "uint256"},
-                {"internalType": "uint256", "name": "totalSize", "type": "uint256"}
-            ],
-            "stateMutability": "view",
-            "type": "function"
-        }];
-
-        const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
-
-        // Check status for all listings
-        const statusChecks = await Promise.all(
-            activeListings.map(async (listing) => {
-                if (!listing.orderHash) return { listing, valid: true }; // Keep if no orderHash
-
-                try {
-                    const status = await seaportContract.getOrderStatus(listing.orderHash);
-                    const isCancelled = status.isCancelled;
-                    const isFilled = status.totalFilled.gte(status.totalSize) && status.totalSize.gt(0);
-                    const isValid = !isCancelled && !isFilled;
-
-                    console.log(`Order ${listing.orderHash.slice(0, 10)}... - Cancelled: ${isCancelled}, Filled: ${isFilled}, Valid: ${isValid}`);
-
-                    return { listing, valid: isValid };
-                } catch (error) {
-                    console.error('Error checking order status:', error);
-                    return { listing, valid: true }; // Keep on error
-                }
-            })
-        );
-
-        // Filter only valid orders
-        activeListings = statusChecks.filter(s => s.valid).map(s => s.listing);
-
-        // Update localStorage - mark invalid orders as inactive
-        const updatedListings = listings.map(l => {
-            const statusCheck = statusChecks.find(s => s.listing.orderHash === l.orderHash);
-            if (statusCheck && !statusCheck.valid) {
-                l.active = false;
-            }
-            return l;
-        });
-        localStorage.setItem('veybListings', JSON.stringify(updatedListings));
-    }
-
-    // Sort by createdAt (newest first)
-    activeListings.sort((a, b) => b.createdAt - a.createdAt);
 
     console.log('Active listings for marketplace:', activeListings);
 
+    // Cache the listings
+    cachedMarketplaceListings = activeListings;
+    isLoadingMarketplace = false;
+
+    // Display the listings
+    displayMarketplaceListings(activeListings);
+}
+
+// Function to display marketplace listings (uses cached data)
+function displayMarketplaceListings(activeListings) {
     const section = document.getElementById('marketplaceSection');
     const container = document.getElementById('marketplaceListings');
 
@@ -447,8 +1039,35 @@ async function showMarketplace() {
             </div>
         `;
     } else {
-        container.innerHTML = activeListings.map(listing => {
-            const createdDate = new Date(listing.createdAt).toLocaleDateString();
+        // Sort listings based on current sort option
+        const sortedListings = [...activeListings].sort((a, b) => {
+            switch (currentSort) {
+                case 'pricePerVeYB':
+                    // Price per veYB (ascending - cheapest first)
+                    const pricePerA = a.lockedAmount ? (a.price / parseFloat(a.lockedAmount)) : Infinity;
+                    const pricePerB = b.lockedAmount ? (b.price / parseFloat(b.lockedAmount)) : Infinity;
+                    return pricePerA - pricePerB;
+
+                case 'price':
+                    // Total price (ascending - cheapest first)
+                    return a.price - b.price;
+
+                case 'amount':
+                    // veYB amount (descending - largest first)
+                    const amountA = parseFloat(a.lockedAmount) || 0;
+                    const amountB = parseFloat(b.lockedAmount) || 0;
+                    return amountB - amountA;
+
+                case 'date':
+                    // Date listed (descending - newest first)
+                    return b.createdAt - a.createdAt;
+
+                default:
+                    return 0;
+            }
+        });
+        container.innerHTML = sortedListings.map((listing, index) => {
+            const createdDate = new Date(listing.createdAt * 1000).toLocaleDateString();
 
             // Handle BigNumber endTime
             let endTimeValue = listing.orderParameters.endTime;
@@ -460,221 +1079,173 @@ async function showMarketplace() {
             const expiryDate = new Date(endTimeValue * 1000).toLocaleDateString();
 
             // Calculate price per veYB
-            const pricePerVeYB = listing.lockedAmount ? (listing.price / parseFloat(listing.lockedAmount)).toFixed(6) : 'N/A';
+            const pricePerVeYB = listing.lockedAmount ? (listing.price / parseFloat(listing.lockedAmount)).toFixed(4) : 'N/A';
 
             return `
                 <div class="listing-card">
-                    <div class="listing-header">
-                        <div>
-                            <h3 class="listing-title">veYB NFT</h3>
-                            <p style="color: var(--text-secondary); font-size: 13px; margin-top: 4px;">Token ID: ${listing.tokenId.slice(0, 10)}...${listing.tokenId.slice(-6)}</p>
-                        </div>
-                        <span class="listing-status active">For Sale</span>
-                    </div>
-                    <div class="listing-details">
-                        <div class="detail-item">
-                            <span class="detail-label">Locked Amount</span>
-                            <span class="detail-value" style="font-weight: 600;">${listing.lockedAmount ? parseFloat(listing.lockedAmount).toLocaleString() : 'N/A'} YB</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Price</span>
-                            <span class="detail-value" style="color: var(--primary); font-size: 18px; font-weight: 600;">${listing.price} ETH</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Price per veYB</span>
-                            <span class="detail-value" style="color: var(--text-secondary);">${pricePerVeYB} ETH</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Seller</span>
-                            <span class="detail-value" style="font-size: 14px; font-family: monospace;">
-                                ${listing.seller.slice(0, 6) + '...' + listing.seller.slice(-4)}
-                            </span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Listed</span>
-                            <span class="detail-value">${createdDate}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Expires</span>
-                            <span class="detail-value">${expiryDate}</span>
+                    <div class="listing-content">
+                        <div class="listing-details">
+                            <div class="detail-item">
+                                <span class="detail-label">Price per veYB</span>
+                                <span class="detail-value" style="color: var(--primary); font-size: 18px; font-weight: 700;">${pricePerVeYB} YB</span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Amount</span>
+                                <span class="detail-value" style="font-weight: 600;">${listing.lockedAmount ? parseFloat(listing.lockedAmount).toLocaleString() : 'N/A'} veYB</span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Total Price</span>
+                                <span class="detail-value" style="font-weight: 600;">${listing.price.toFixed(4)} YB</span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Seller</span>
+                                <a href="https://etherscan.io/address/${listing.seller}" target="_blank" class="detail-value" style="font-size: 13px; font-family: monospace; color: var(--primary); text-decoration: none;">
+                                    ${listing.seller.slice(0, 6) + '...' + listing.seller.slice(-4)}
+                                </a>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Listed</span>
+                                <span class="detail-value">${createdDate}</span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Expires</span>
+                                <span class="detail-value">${expiryDate}</span>
+                            </div>
                         </div>
                     </div>
-                    <div style="background: var(--bg-dark); padding: 12px; border-radius: 10px; margin: 16px 0; font-size: 13px; color: var(--text-secondary);">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                            <span>Contract:</span>
-                            <a href="https://etherscan.io/address/0x8235c179E9e84688FBd8B12295EfC26834dAC211" target="_blank" style="color: var(--primary); text-decoration: none;">
-                                veYB Token
-                            </a>
-                        </div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span>Order Hash:</span>
-                            <span style="font-family: monospace; font-size: 11px;">${listing.orderHash ? listing.orderHash.slice(0, 12) + '...' : 'N/A'}</span>
-                        </div>
-                    </div>
-                    <div class="listing-actions">
-                        <button class="btn-buy" onclick='buyNFT(${JSON.stringify(listing).replace(/'/g, "&apos;")})'>
-                            Buy for ${listing.price} ETH
+                    <div class="listing-buy-section">
+                        <button class="btn-buy" id="buyBtn-${index}" data-listing-index="${index}" onclick='buyNFT(${JSON.stringify(listing).replace(/'/g, "&apos;")}, ${index})'>
+                            Buy for ${listing.price.toFixed(4)} YB
                         </button>
-                        <a href="https://etherscan.io/tx/${listing.txHash}" target="_blank" style="text-decoration: none; display: inline-flex; align-items: center; padding: 12px 20px; background: var(--bg-dark); color: var(--text-primary); border-radius: 10px; font-size: 14px; font-weight: 600; border: 1px solid var(--border);">
-                            View on Etherscan
-                        </a>
                     </div>
                 </div>
             `;
         }).join('');
+
+        // Check YB allowance for all buy buttons
+        updateBuyButtonsText(sortedListings);
     }
 
-    section.style.display = 'block';
+    // Section visibility is controlled by switchTab()
 }
 
-// Cancel listing (on-chain)
-async function cancelListing() {
-    if (!confirm('Are you sure you want to cancel this listing? This will send a blockchain transaction.')) return;
-
-    if (!ethersProvider || !signer) {
-        showToast('Please connect your wallet');
-        return;
-    }
+// Update buy button text based on YB allowance
+async function updateBuyButtonsText(listings) {
+    if (!userAddress || !ethersProvider) return;
 
     try {
-        showToast('Preparing cancellation...');
+        // Check YB allowance
+        const ybTokenContract = new ethers.Contract(YB_TOKEN_ADDRESS, YB_TOKEN_ABI, ethersProvider);
+        const allowance = await ybTokenContract.allowance(userAddress, MARKETPLACE_ADDRESS);
 
-        const myListing = localStorage.getItem(`myListing_${userAddress}`);
-        if (!myListing) {
-            showToast('No listing found');
-            return;
-        }
+        listings.forEach((listing, index) => {
+            const btn = document.getElementById(`buyBtn-${index}`);
+            if (!btn) return;
 
-        const listing = JSON.parse(myListing);
+            // Check allowance
+            const priceInWei = ethers.utils.parseEther(listing.price.toString());
 
-        // Handle orderParameters - convert from array to object if needed
-        let orderParams = listing.orderParameters;
-        if (Array.isArray(orderParams)) {
-            console.log('Converting orderParameters from array to object');
-            orderParams = {
-                offerer: orderParams[0],
-                zone: orderParams[1],
-                offer: orderParams[2],
-                consideration: orderParams[3],
-                orderType: orderParams[4],
-                startTime: orderParams[5],
-                endTime: orderParams[6],
-                zoneHash: orderParams[7],
-                salt: orderParams[8],
-                conduitKey: orderParams[9],
-                totalOriginalConsiderationItems: orderParams[10]
-            };
-        }
-
-        // Seaport cancel ABI
-        const cancelABI = [
-            {
-                "inputs": [
-                    {
-                        "components": [
-                            {"internalType": "address", "name": "offerer", "type": "address"},
-                            {"internalType": "address", "name": "zone", "type": "address"},
-                            {
-                                "components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
-                                ],
-                                "internalType": "struct OfferItem[]",
-                                "name": "offer",
-                                "type": "tuple[]"
-                            },
-                            {
-                                "components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
-                                    {"internalType": "address payable", "name": "recipient", "type": "address"}
-                                ],
-                                "internalType": "struct ConsiderationItem[]",
-                                "name": "consideration",
-                                "type": "tuple[]"
-                            },
-                            {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
-                            {"internalType": "uint256", "name": "startTime", "type": "uint256"},
-                            {"internalType": "uint256", "name": "endTime", "type": "uint256"},
-                            {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
-                            {"internalType": "uint256", "name": "salt", "type": "uint256"},
-                            {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
-                            {"internalType": "uint256", "name": "totalOriginalConsiderationItems", "type": "uint256"}
-                        ],
-                        "internalType": "struct OrderComponents[]",
-                        "name": "orders",
-                        "type": "tuple[]"
-                    }
-                ],
-                "name": "cancel",
-                "outputs": [{"internalType": "bool", "name": "cancelled", "type": "bool"}],
-                "stateMutability": "nonpayable",
-                "type": "function"
+            if (allowance.lt(priceInWei)) {
+                // Need approval
+                btn.textContent = `Approve & Buy for ${listing.price.toFixed(4)} YB`;
+            } else {
+                // Already approved
+                btn.textContent = `Buy for ${listing.price.toFixed(4)} YB`;
             }
-        ];
-
-        const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, cancelABI, signer);
-
-        // Build OrderComponents for cancel
-        const orderComponents = {
-            offerer: orderParams.offerer,
-            zone: orderParams.zone,
-            offer: orderParams.offer,
-            consideration: orderParams.consideration,
-            orderType: orderParams.orderType,
-            startTime: orderParams.startTime,
-            endTime: orderParams.endTime,
-            zoneHash: orderParams.zoneHash,
-            salt: orderParams.salt,
-            conduitKey: orderParams.conduitKey,
-            totalOriginalConsiderationItems: orderParams.totalOriginalConsiderationItems
-        };
-
-        const tx = await seaportContract.cancel([orderComponents]);
-
-        showToast('Transaction submitted...', 'success');
-
-        await tx.wait();
-
-        // Remove from localStorage after blockchain confirmation
-        localStorage.removeItem(`myListing_${userAddress}`);
-
-        // Update global listings
-        const listings = JSON.parse(localStorage.getItem('veybListings') || '[]');
-        const updated = listings.map(l => {
-            if (l.seller.toLowerCase() === userAddress.toLowerCase()) {
-                l.active = false;
-            }
-            return l;
         });
-        localStorage.setItem('veybListings', JSON.stringify(updated));
-
-        showToast('Listing canceled successfully!', 'success');
-
-        setTimeout(() => {
-            window.location.reload();
-        }, 2000);
-
     } catch (error) {
-        console.error('Error canceling listing:', error);
-
-        if (error.code === 4001 || error.code === 'ACTION_REJECTED') {
-            showToast('Cancellation rejected');
-        } else {
-            showToast('Error: ' + (error.reason || error.message));
-        }
+        console.error('Error checking YB allowance:', error);
     }
 }
 
-// Cancel listing by order hash (for marketplace listings)
+
+// Show permalock required modal
+function showPermalockModal(message) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('permalockModal');
+        const messageEl = document.getElementById('permalockModalMessage');
+        const confirmBtn = document.getElementById('permalockModalConfirm');
+        const cancelBtn = document.getElementById('permalockModalCancel');
+
+        messageEl.textContent = message;
+        modal.style.display = 'flex';
+
+        function handleConfirm() {
+            modal.style.display = 'none';
+            cleanup();
+            resolve(true);
+        }
+
+        function handleCancel() {
+            modal.style.display = 'none';
+            cleanup();
+            resolve(false);
+        }
+
+        function cleanup() {
+            confirmBtn.removeEventListener('click', handleConfirm);
+            cancelBtn.removeEventListener('click', handleCancel);
+            modal.removeEventListener('click', handleOverlayClick);
+        }
+
+        function handleOverlayClick(e) {
+            if (e.target === modal) {
+                handleCancel();
+            }
+        }
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        cancelBtn.addEventListener('click', handleCancel);
+        modal.addEventListener('click', handleOverlayClick);
+    });
+}
+
+// Show success modal
+function showSuccessModal(message) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('successModal');
+        const messageEl = document.getElementById('successModalMessage');
+        const closeBtn = document.getElementById('successModalClose');
+
+        messageEl.textContent = message;
+        modal.style.display = 'flex';
+
+        function handleClose() {
+            modal.style.display = 'none';
+            cleanup();
+            resolve();
+        }
+
+        function cleanup() {
+            closeBtn.removeEventListener('click', handleClose);
+            modal.removeEventListener('click', handleOverlayClick);
+        }
+
+        function handleOverlayClick(e) {
+            if (e.target === modal) {
+                handleClose();
+            }
+        }
+
+        closeBtn.addEventListener('click', handleClose);
+        modal.addEventListener('click', handleOverlayClick);
+
+        // Re-init button gradient for the modal button
+        if (typeof initButtonGradients === 'function') {
+            setTimeout(() => {
+                const buttons = modal.querySelectorAll('.btn-primary, .btn-secondary');
+                buttons.forEach(button => {
+                    button.addEventListener('mousemove', handleButtonHover);
+                    button.addEventListener('mouseleave', handleButtonLeave);
+                });
+            }, 0);
+        }
+    });
+}
+
+// Cancel all listings by incrementing counter (for marketplace listings)
 async function cancelListingByHash(listing) {
-    if (!confirm('Are you sure you want to cancel this listing? This will send a blockchain transaction.')) return;
+    if (!confirm('Are you sure you want to cancel ALL your listings? This will send a blockchain transaction.')) return;
 
     if (!ethersProvider || !signer) {
         showToast('Please connect your wallet');
@@ -684,137 +1255,41 @@ async function cancelListingByHash(listing) {
     try {
         showToast('Preparing cancellation...');
 
-        console.log('Canceling listing:', listing);
-
-        if (!listing || !listing.orderParameters) {
-            showToast('Invalid listing data');
-            return;
-        }
+        console.log('Canceling all listings for user:', userAddress);
 
         // Verify ownership
-        if (listing.seller.toLowerCase() !== userAddress.toLowerCase()) {
+        if (listing && listing.seller && listing.seller.toLowerCase() !== userAddress.toLowerCase()) {
             showToast('You can only cancel your own listings');
             return;
         }
 
-        // Handle orderParameters - convert from array to object if needed
-        let orderParams = listing.orderParameters;
-        if (Array.isArray(orderParams)) {
-            console.log('Converting orderParameters from array to object');
-            orderParams = {
-                offerer: orderParams[0],
-                zone: orderParams[1],
-                offer: orderParams[2],
-                consideration: orderParams[3],
-                orderType: orderParams[4],
-                startTime: orderParams[5],
-                endTime: orderParams[6],
-                zoneHash: orderParams[7],
-                salt: orderParams[8],
-                conduitKey: orderParams[9],
-                totalOriginalConsiderationItems: orderParams[10]
-            };
-        }
+        // Use incrementCounter to invalidate all previous orders
+        const incrementCounterABI = [{
+            "inputs": [],
+            "name": "incrementCounter",
+            "outputs": [{"internalType": "uint256", "name": "newCounter", "type": "uint256"}],
+            "stateMutability": "nonpayable",
+            "type": "function"
+        }];
 
-        // Seaport cancel ABI
-        const cancelABI = [
-            {
-                "inputs": [
-                    {
-                        "components": [
-                            {"internalType": "address", "name": "offerer", "type": "address"},
-                            {"internalType": "address", "name": "zone", "type": "address"},
-                            {
-                                "components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
-                                ],
-                                "internalType": "struct OfferItem[]",
-                                "name": "offer",
-                                "type": "tuple[]"
-                            },
-                            {
-                                "components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
-                                    {"internalType": "address payable", "name": "recipient", "type": "address"}
-                                ],
-                                "internalType": "struct ConsiderationItem[]",
-                                "name": "consideration",
-                                "type": "tuple[]"
-                            },
-                            {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
-                            {"internalType": "uint256", "name": "startTime", "type": "uint256"},
-                            {"internalType": "uint256", "name": "endTime", "type": "uint256"},
-                            {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
-                            {"internalType": "uint256", "name": "salt", "type": "uint256"},
-                            {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
-                            {"internalType": "uint256", "name": "totalOriginalConsiderationItems", "type": "uint256"}
-                        ],
-                        "internalType": "struct OrderComponents[]",
-                        "name": "orders",
-                        "type": "tuple[]"
-                    }
-                ],
-                "name": "cancel",
-                "outputs": [{"internalType": "bool", "name": "cancelled", "type": "bool"}],
-                "stateMutability": "nonpayable",
-                "type": "function"
-            }
-        ];
+        const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, incrementCounterABI, signer);
 
-        const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, cancelABI, signer);
-
-        // Build OrderComponents for cancel
-        const orderComponents = {
-            offerer: orderParams.offerer,
-            zone: orderParams.zone,
-            offer: orderParams.offer,
-            consideration: orderParams.consideration,
-            orderType: orderParams.orderType,
-            startTime: orderParams.startTime,
-            endTime: orderParams.endTime,
-            zoneHash: orderParams.zoneHash,
-            salt: orderParams.salt,
-            conduitKey: orderParams.conduitKey,
-            totalOriginalConsiderationItems: orderParams.totalOriginalConsiderationItems
-        };
-
-        const tx = await seaportContract.cancel([orderComponents]);
+        const tx = await seaportContract.incrementCounter();
 
         showToast('Transaction submitted...', 'success');
 
         await tx.wait();
 
-        // Update global listings
-        const listings = JSON.parse(localStorage.getItem('veybListings') || '[]');
-        const updated = listings.map(l => {
-            if (l.orderHash === listing.orderHash) {
-                l.active = false;
-            }
-            return l;
-        });
-        localStorage.setItem('veybListings', JSON.stringify(updated));
+        showToast('All listings cancelled successfully!', 'success');
 
-        // Also remove from myListing if it matches
-        const myListing = localStorage.getItem(`myListing_${userAddress}`);
-        if (myListing) {
-            const myListingData = JSON.parse(myListing);
-            if (myListingData.orderHash === listing.orderHash) {
-                localStorage.removeItem(`myListing_${userAddress}`);
-            }
-        }
-
-        showToast('Listing canceled successfully!', 'success');
+        // Clear cache and reload data
+        cachedSellerListings = null;
+        cachedMarketplaceListings = null;
+        cachedBlockchainEvents = null;
 
         setTimeout(() => {
-            window.location.reload();
+            showMarketplace(true); // Load marketplace first to populate events cache
+            showSellerDashboard(true);
         }, 2000);
 
     } catch (error) {
@@ -829,13 +1304,36 @@ async function cancelListingByHash(listing) {
 }
 
 // Buy NFT
-async function buyNFT(listing) {
+async function buyNFT(listing, buttonIndex) {
     if (!ethersProvider || !signer) {
         showToast('Please connect your wallet first');
         return;
     }
 
+    // Get button element for loading state
+    const buyBtn = buttonIndex !== undefined ? document.getElementById(`buyBtn-${buttonIndex}`) : null;
+    const originalBtnText = buyBtn ? buyBtn.innerHTML : '';
+
+    // Helper to set button loading state
+    function setBtnLoading(isLoading, text) {
+        if (!buyBtn) return;
+
+        if (isLoading) {
+            buyBtn.disabled = true;
+            buyBtn.classList.add('btn-loading');
+            buyBtn.innerHTML = `
+                ${text}
+                <div class="spinner" style="width: 16px; height: 16px; border-width: 2px;"></div>
+            `;
+        } else {
+            buyBtn.disabled = false;
+            buyBtn.classList.remove('btn-loading');
+            buyBtn.innerHTML = originalBtnText;
+        }
+    }
+
     try {
+        setBtnLoading(true, 'Preparing...');
         showToast('Preparing purchase...');
 
         // Build the order for fulfillOrder
@@ -908,36 +1406,112 @@ async function buyNFT(listing) {
 
         const seaportContract = new ethers.Contract(MARKETPLACE_ADDRESS, fulfillOrderABI, signer);
 
+        // Check if buyer has veYB NFT with permalock
+        setBtnLoading(true, 'Checking permalock...');
+        const nftContract = new ethers.Contract(VEYB_NFT_ADDRESS, ERC721_ABI, ethersProvider);
+
+        // Check if buyer has veYB NFT
+        const buyerBalance = await nftContract.balanceOf(userAddress);
+        if (buyerBalance.eq(0)) {
+            setBtnLoading(false);
+            const shouldRedirect = await showPermalockModal(
+                'The veYB NFT contract requires both seller and buyer to have permalock for transfers. ' +
+                'You need to lock any amount of veYB (even minimal) and apply permalock to be able to purchase. ' +
+                'Click "Go to Lock Page" to create your permalock.'
+            );
+            if (shouldRedirect) {
+                window.open('https://yieldbasis.com/lock', '_blank');
+            }
+            return;
+        }
+
+        // Check if buyer has permalock
+        const buyerLockedData = await nftContract.locked(userAddress);
+        const buyerLockEnd = buyerLockedData.end;
+        const now = Math.floor(Date.now() / 1000);
+        const tenYearsFromNow = now + (10 * 365 * 24 * 60 * 60);
+        const buyerHasPermalock = buyerLockEnd.gt(tenYearsFromNow);
+
+        if (!buyerHasPermalock) {
+            setBtnLoading(false);
+            const shouldRedirect = await showPermalockModal(
+                'The veYB NFT contract requires both seller and buyer to have permalock for transfers. ' +
+                'You have veYB locked, but without permalock. Please apply permalock to be able to purchase.'
+            );
+            if (shouldRedirect) {
+                window.open('https://yieldbasis.com/lock', '_blank');
+            }
+            return;
+        }
+
+        // Check YB token balance
+        setBtnLoading(true, 'Checking balance...');
+        const ybTokenContract = new ethers.Contract(YB_TOKEN_ADDRESS, YB_TOKEN_ABI, signer);
+        const ybBalance = await ybTokenContract.balanceOf(userAddress);
         const priceInWei = ethers.utils.parseEther(listing.price.toString());
 
+        if (ybBalance.lt(priceInWei)) {
+            const formattedBalance = ethers.utils.formatEther(ybBalance);
+            showToast(`Insufficient YB balance. You have ${parseFloat(formattedBalance).toFixed(4)} YB, need ${listing.price.toFixed(4)} YB`);
+            setBtnLoading(false);
+            return;
+        }
+
+        // Check YB token allowance
+        setBtnLoading(true, 'Checking approval...');
+        const allowance = await ybTokenContract.allowance(userAddress, MARKETPLACE_ADDRESS);
+
+        if (allowance.lt(priceInWei)) {
+            setBtnLoading(true, 'Waiting for approval...');
+            showToast('Approving YB tokens...', 'info');
+
+            // Approve YB tokens for Seaport
+            const approveTx = await ybTokenContract.approve(MARKETPLACE_ADDRESS, ethers.constants.MaxUint256);
+
+            setBtnLoading(true, 'Confirming approval...');
+            await approveTx.wait();
+
+            showToast('YB tokens approved successfully', 'success');
+        }
+
+        setBtnLoading(true, 'Waiting for signature...');
+        showToast('Confirming purchase...', 'info');
+
+        // Call fulfillOrder WITHOUT sending ETH
         const tx = await seaportContract.fulfillOrder(
             order,
-            ethers.constants.HashZero,
-            { value: priceInWei }
+            ethers.constants.HashZero
         );
 
+        setBtnLoading(true, 'Processing transaction...');
         showToast('Transaction submitted...', 'success');
 
-        await tx.wait();
+        const receipt = await tx.wait();
 
-        showToast('Purchase successful!', 'success');
+        setBtnLoading(false);
 
-        // Mark as sold
-        const listings = JSON.parse(localStorage.getItem('veybListings') || '[]');
-        const updated = listings.map(l => {
-            if (l.orderHash === listing.orderHash) {
-                l.active = false;
-            }
-            return l;
-        });
-        localStorage.setItem('veybListings', JSON.stringify(updated));
+        // Update wallet veYB info
+        if (typeof checkApprovalStatus === 'function') {
+            await checkApprovalStatus();
+        }
 
-        setTimeout(() => {
-            window.location.reload();
-        }, 2000);
+        // Show success modal
+        const lockedAmount = listing.lockedAmount ? parseFloat(listing.lockedAmount).toLocaleString() : 'N/A';
+        await showSuccessModal(
+            `You have successfully purchased ${lockedAmount} veYB NFT for ${listing.price.toFixed(4)} YB!`
+        );
+
+        // Clear cache and reload data
+        cachedSellerListings = null;
+        cachedMarketplaceListings = null;
+        cachedBlockchainEvents = null;
+
+        showMarketplace(true);
 
     } catch (error) {
         console.error('Error buying NFT:', error);
+
+        setBtnLoading(false);
 
         if (error.code === 4001 || error.code === 'ACTION_REJECTED') {
             showToast('Purchase canceled');
@@ -950,6 +1524,68 @@ async function buyNFT(listing) {
         }
     }
 }
+
+// Initialize scan depth and sort selectors
+document.addEventListener('DOMContentLoaded', () => {
+    const scanDepthSelect = document.getElementById('scanDepthSelect');
+    const sortSelect = document.getElementById('sortSelect');
+
+    // Load saved scan depth from localStorage
+    const savedDepth = localStorage.getItem('marketplaceScanDepth');
+    if (savedDepth) {
+        currentScanDepth = parseInt(savedDepth);
+        if (scanDepthSelect) {
+            scanDepthSelect.value = savedDepth;
+        }
+    }
+
+    // Load saved sort option from localStorage
+    const savedSort = localStorage.getItem('marketplaceSort');
+    if (savedSort) {
+        currentSort = savedSort;
+        if (sortSelect) {
+            sortSelect.value = savedSort;
+        }
+    }
+
+    // Handle scan depth change - automatically reload marketplace
+    if (scanDepthSelect) {
+        scanDepthSelect.addEventListener('change', async (e) => {
+            if (isLoadingMarketplace) {
+                showToast('Marketplace is already loading...');
+                return;
+            }
+
+            currentScanDepth = parseInt(e.target.value);
+            localStorage.setItem('marketplaceScanDepth', currentScanDepth.toString());
+            console.log('Scan depth changed to:', currentScanDepth, 'blocks');
+
+            const depthText = e.target.options[e.target.selectedIndex].text;
+            showToast(`Loading marketplace for ${depthText}...`, 'info');
+
+            // Clear cache and reload
+            cachedMarketplaceListings = null;
+            cachedBlockchainEvents = null;
+            cachedSellerListings = null;
+
+            await showMarketplace(true);
+        });
+    }
+
+    // Handle sort change - re-display with new sorting
+    if (sortSelect) {
+        sortSelect.addEventListener('change', (e) => {
+            currentSort = e.target.value;
+            localStorage.setItem('marketplaceSort', currentSort);
+            console.log('Sort changed to:', currentSort);
+
+            // Re-display marketplace with new sorting (uses cached data)
+            if (cachedMarketplaceListings !== null) {
+                displayMarketplaceListings(cachedMarketplaceListings);
+            }
+        });
+    }
+});
 
 // Initialize on wallet connection
 if (typeof window !== 'undefined') {

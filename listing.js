@@ -1,17 +1,90 @@
+// Global variable to store user's veYB amount
+let userVeYBAmount = 0;
+
 // Update price preview
 function updatePricePreview() {
     const priceInput = document.getElementById('priceInput');
     const durationInput = document.getElementById('durationInput');
-    const receiveAmount = document.getElementById('receiveAmount');
+    const totalPricePreview = document.getElementById('totalPricePreview');
+    const pricePerVeYBPreview = document.getElementById('pricePerVeYBPreview');
     const expiryDate = document.getElementById('expiryDate');
+    const pricingModeTotal = document.getElementById('pricingModeTotal');
 
-    const price = parseFloat(priceInput.value) || 0;
-    receiveAmount.textContent = `${price.toFixed(4)} ETH`;
+    const inputValue = parseFloat(priceInput.value) || 0;
 
-    const days = parseInt(durationInput.value);
-    const expiryTimestamp = Math.floor(Date.now() / 1000) + (days * 24 * 60 * 60);
-    const expiryDateObj = new Date(expiryTimestamp * 1000);
-    expiryDate.textContent = expiryDateObj.toLocaleDateString();
+    let totalPrice, pricePerVeYB;
+
+    if (pricingModeTotal.checked) {
+        // Input is total price
+        totalPrice = inputValue;
+        pricePerVeYB = userVeYBAmount > 0 ? totalPrice / userVeYBAmount : 0;
+    } else {
+        // Input is price per veYB
+        pricePerVeYB = inputValue;
+        totalPrice = pricePerVeYB * userVeYBAmount;
+    }
+
+    totalPricePreview.textContent = `${totalPrice.toFixed(4)} YB`;
+    pricePerVeYBPreview.textContent = `${pricePerVeYB.toFixed(4)} YB`;
+
+    const durationValue = durationInput.value;
+
+    // Handle indefinite listing
+    if (durationValue === 'indefinite') {
+        expiryDate.textContent = 'Never expires';
+    } else {
+        const days = parseFloat(durationValue);
+        const expiryTimestamp = Math.floor(Date.now() / 1000) + (days * 24 * 60 * 60);
+        const expiryDateObj = new Date(expiryTimestamp * 1000);
+
+        // Format expiry date and time
+        if (days < 1) {
+            // For durations less than 1 day, show time as well
+            expiryDate.textContent = expiryDateObj.toLocaleString();
+        } else {
+            expiryDate.textContent = expiryDateObj.toLocaleDateString();
+        }
+    }
+}
+
+// Update pricing mode (label and placeholder)
+function updatePricingMode() {
+    const pricingModeTotal = document.getElementById('pricingModeTotal');
+    const priceInputLabel = document.getElementById('priceInputLabel');
+    const priceInput = document.getElementById('priceInput');
+
+    if (pricingModeTotal.checked) {
+        priceInputLabel.textContent = 'Total Price (YB)';
+        // Dynamic placeholder: 0.9 * veYB amount
+        const totalPlaceholder = userVeYBAmount > 0 ? (userVeYBAmount * 0.9).toFixed(2) : '0.9';
+        priceInput.placeholder = totalPlaceholder;
+    } else {
+        priceInputLabel.textContent = 'Price per veYB (YB)';
+        priceInput.placeholder = '0.9';
+    }
+
+    // Clear input when switching modes
+    priceInput.value = '';
+    updatePricePreview();
+}
+
+// Update selling amount display
+function updateSellingAmount(amount) {
+    userVeYBAmount = amount;
+    const sellingAmount = document.getElementById('sellingAmount');
+    if (sellingAmount) {
+        sellingAmount.textContent = `${amount.toLocaleString()} veYB`;
+    }
+
+    // Update placeholder for Total Price mode
+    const pricingModeTotal = document.getElementById('pricingModeTotal');
+    const priceInput = document.getElementById('priceInput');
+    if (pricingModeTotal && pricingModeTotal.checked && priceInput) {
+        const totalPlaceholder = amount > 0 ? (amount * 0.9).toFixed(2) : '0.9';
+        priceInput.placeholder = totalPlaceholder;
+    }
+
+    updatePricePreview();
 }
 
 // Create Seaport listing
@@ -24,11 +97,46 @@ async function createListing() {
     const priceInput = document.getElementById('priceInput');
     const durationInput = document.getElementById('durationInput');
     const createListingBtn = document.getElementById('createListingBtn');
+    const pricingModeTotal = document.getElementById('pricingModeTotal');
 
-    const price = parseFloat(priceInput.value);
-    if (!price || price < 0.0001) {
-        showToast('Please enter a valid price (minimum 0.0001 ETH)');
+    const inputValue = parseFloat(priceInput.value);
+    if (!inputValue || inputValue <= 0) {
+        showToast('Please enter a valid price');
         return;
+    }
+
+    // Calculate final total price and price per veYB based on pricing mode
+    let finalPrice, pricePerVeYB;
+    if (pricingModeTotal.checked) {
+        // Input is total price
+        finalPrice = inputValue;
+        pricePerVeYB = userVeYBAmount > 0 ? finalPrice / userVeYBAmount : 0;
+    } else {
+        // Input is price per veYB - calculate total
+        pricePerVeYB = inputValue;
+        finalPrice = pricePerVeYB * userVeYBAmount;
+    }
+
+    // Validate minimum total price
+    if (finalPrice < 0.1) {
+        showToast('Total price must be at least 0.1 YB');
+        return;
+    }
+
+    // Warning if price per veYB is less than 0.3
+    if (pricePerVeYB < 0.3) {
+        const confirmed = confirm(
+            `⚠️ Warning: Low Price Alert!\n\n` +
+            `You are selling at ${pricePerVeYB.toFixed(4)} YB per veYB.\n` +
+            `This is less than 0.3 YB per veYB.\n\n` +
+            `Total you will receive: ${finalPrice.toFixed(4)} YB\n` +
+            `For ${userVeYBAmount.toLocaleString()} veYB\n\n` +
+            `Are you sure you want to continue with this low price?`
+        );
+
+        if (!confirmed) {
+            return;
+        }
     }
 
     // Check if approved first
@@ -58,22 +166,192 @@ async function createListing() {
     try {
         createListingBtn.disabled = true;
         createListingBtn.classList.add('btn-loading');
+        createListingBtn.textContent = 'Checking for active listings...';
+
+        // Get current counter first
+        const getCounterABI = [{
+            "inputs": [{"internalType": "address", "name": "offerer", "type": "address"}],
+            "name": "getCounter",
+            "outputs": [{"internalType": "uint256", "name": "counter", "type": "uint256"}],
+            "stateMutability": "view",
+            "type": "function"
+        }];
+        const counterContract = new ethers.Contract(MARKETPLACE_ADDRESS, getCounterABI, ethersProvider);
+        const currentCounter = await counterContract.getCounter(userAddress);
+        console.log('Current counter for user:', currentCounter.toString());
+
+        // Check if user has any active listings from blockchain (scan entire blockchain)
+        const blockchainOrders = await getActiveOrdersFromBlockchain(userAddress, 0);
+        console.log(`Found ${blockchainOrders.length} OrderValidated events for user`);
+
+        // Filter only orders that match current counter (truly active)
+        const getOrderHashABI = [{
+            "inputs": [{
+                "components": [
+                    {"internalType": "address", "name": "offerer", "type": "address"},
+                    {"internalType": "address", "name": "zone", "type": "address"},
+                    {
+                        "components": [
+                            {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                            {"internalType": "address", "name": "token", "type": "address"},
+                            {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                            {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                            {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
+                        ],
+                        "internalType": "struct OfferItem[]",
+                        "name": "offer",
+                        "type": "tuple[]"
+                    },
+                    {
+                        "components": [
+                            {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
+                            {"internalType": "address", "name": "token", "type": "address"},
+                            {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
+                            {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
+                            {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
+                            {"internalType": "address payable", "name": "recipient", "type": "address"}
+                        ],
+                        "internalType": "struct ConsiderationItem[]",
+                        "name": "consideration",
+                        "type": "tuple[]"
+                    },
+                    {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
+                    {"internalType": "uint256", "name": "startTime", "type": "uint256"},
+                    {"internalType": "uint256", "name": "endTime", "type": "uint256"},
+                    {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
+                    {"internalType": "uint256", "name": "salt", "type": "uint256"},
+                    {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
+                    {"internalType": "uint256", "name": "counter", "type": "uint256"}
+                ],
+                "internalType": "struct OrderComponents",
+                "name": "orderComponents",
+                "type": "tuple"
+            }],
+            "name": "getOrderHash",
+            "outputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
+            "stateMutability": "view",
+            "type": "function"
+        }];
+        const hashContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderHashABI, ethersProvider);
+
+        // Check which orders match current counter (same logic as My Active Listings)
+        const activeOrders = [];
+
+        // Get order status checker
+        const getOrderStatusABI = [{
+            "inputs": [{"internalType": "bytes32", "name": "orderHash", "type": "bytes32"}],
+            "name": "getOrderStatus",
+            "outputs": [
+                {"internalType": "bool", "name": "isValidated", "type": "bool"},
+                {"internalType": "bool", "name": "isCancelled", "type": "bool"},
+                {"internalType": "uint256", "name": "totalFilled", "type": "uint256"},
+                {"internalType": "uint256", "name": "totalSize", "type": "uint256"}
+            ],
+            "stateMutability": "view",
+            "type": "function"
+        }];
+        const statusContract = new ethers.Contract(MARKETPLACE_ADDRESS, getOrderStatusABI, ethersProvider);
+
+        for (const event of blockchainOrders) {
+            const orderHash = event.args.orderHash;
+            const orderHashLower = orderHash.toLowerCase();
+            const orderParams = event.args.orderParameters;
+
+            try {
+                // Check order status first
+                const status = await statusContract.getOrderStatus(orderHash);
+                const isCancelled = status.isCancelled;
+                const isFilled = status.totalFilled.gte(status.totalSize) && status.totalSize.gt(0);
+                const isActive = status.isValidated && !isCancelled && !isFilled;
+
+                if (!isActive) {
+                    console.log(`Order ${orderHash.slice(0, 10)}... is cancelled or filled via getOrderStatus, skipping`);
+                    continue;
+                }
+
+                // Build OrderComponents with current counter
+                const orderComponents = {
+                    offerer: orderParams.offerer,
+                    zone: orderParams.zone,
+                    offer: orderParams.offer,
+                    consideration: orderParams.consideration,
+                    orderType: orderParams.orderType,
+                    startTime: orderParams.startTime,
+                    endTime: orderParams.endTime,
+                    zoneHash: orderParams.zoneHash,
+                    salt: orderParams.salt,
+                    conduitKey: orderParams.conduitKey,
+                    counter: currentCounter
+                };
+
+                // Calculate what the order hash would be with current counter
+                const computedHash = await hashContract.getOrderHash(orderComponents);
+
+                // If hashes match, order is still active
+                if (computedHash.toLowerCase() === orderHashLower) {
+                    activeOrders.push(event);
+                    console.log(`Order ${orderHash.slice(0, 10)}... is truly active with current counter`);
+                } else {
+                    console.log(`Order ${orderHash.slice(0, 10)}... counter mismatch (invalidated), skipping`);
+                }
+            } catch (error) {
+                console.error('Error checking order counter:', error);
+            }
+        }
+
+        console.log(`Found ${blockchainOrders.length} total events, ${activeOrders.length} truly active with current counter`);
+
+        // If user has active listings, cancel them by incrementing counter
+        if (activeOrders.length > 0) {
+            try {
+                showToast('Canceling previous listings...', 'info');
+                createListingBtn.textContent = 'Canceling previous listings...';
+
+                const incrementCounterABI = [{
+                    "inputs": [],
+                    "name": "incrementCounter",
+                    "outputs": [{"internalType": "uint256", "name": "newCounter", "type": "uint256"}],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                }];
+
+                const incrementContract = new ethers.Contract(MARKETPLACE_ADDRESS, incrementCounterABI, signer);
+                const incrementTx = await incrementContract.incrementCounter();
+                await incrementTx.wait();
+
+                showToast('Previous listings cancelled', 'success');
+            } catch (error) {
+                console.error('Error incrementing counter:', error);
+                showToast('Error canceling previous listings', 'error');
+                throw error; // Stop listing creation if cancellation fails
+            }
+        }
+
         createListingBtn.textContent = 'Creating listing...';
 
         // Get tokenId (for veYB it's the user's address as uint256)
         // Convert address to BigNumber
         const tokenId = ethers.BigNumber.from(userAddress);
 
-        // Convert price to wei
-        const priceInWei = ethers.utils.parseEther(price.toString());
+        // Convert final price to wei
+        const priceInWei = ethers.utils.parseEther(finalPrice.toString());
 
         // Calculate timestamps
         const startTime = Math.floor(Date.now() / 1000);
-        const days = parseInt(durationInput.value);
-        const endTime = startTime + (days * 24 * 60 * 60);
+        const durationValue = durationInput.value;
+
+        let endTime;
+        if (durationValue === 'indefinite') {
+            // Set endTime to year 2100 (Jan 1, 2100 00:00:00 UTC)
+            endTime = 4102444800;
+        } else {
+            const days = parseFloat(durationValue);
+            endTime = startTime + Math.floor(days * 24 * 60 * 60);
+        }
+
         const salt = ethers.BigNumber.from(startTime);
 
-        // Build OrderParameters
+        // Build OrderParameters (AFTER incrementCounter to use new counter)
         const orderParameters = {
             offerer: userAddress,
             zone: ethers.constants.AddressZero,
@@ -88,8 +366,8 @@ async function createListing() {
             ],
             consideration: [
                 {
-                    itemType: 0, // ETH
-                    token: ethers.constants.AddressZero,
+                    itemType: 1, // ERC20 (YB Token)
+                    token: YB_TOKEN_ADDRESS,
                     identifierOrCriteria: ethers.BigNumber.from(0),
                     startAmount: priceInWei,
                     endAmount: priceInWei,
@@ -104,83 +382,6 @@ async function createListing() {
             conduitKey: ethers.constants.HashZero,
             totalOriginalConsiderationItems: 1
         };
-
-        // Get locked amount from veYB contract
-        const nftContract = new ethers.Contract(VEYB_NFT_ADDRESS, ERC721_ABI, ethersProvider);
-        const lockedData = await nftContract.locked(userAddress);
-        const lockedAmount = lockedData.amount; // int256
-        const formattedLockedAmount = parseFloat(ethers.utils.formatEther(lockedAmount.abs())).toFixed(2);
-
-        // Check if there's an existing listing and cancel it first
-        const existingListing = localStorage.getItem(`myListing_${userAddress}`);
-        if (existingListing) {
-            const oldListing = JSON.parse(existingListing);
-            if (oldListing.active && oldListing.orderParameters) {
-                try {
-                    showToast('Canceling previous listing...', 'info');
-
-                    const cancelABI = [{
-                        "inputs": [{
-                            "components": [
-                                {"internalType": "address", "name": "offerer", "type": "address"},
-                                {"internalType": "address", "name": "zone", "type": "address"},
-                                {"components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"}
-                                ], "internalType": "struct OfferItem[]", "name": "offer", "type": "tuple[]"},
-                                {"components": [
-                                    {"internalType": "enum ItemType", "name": "itemType", "type": "uint8"},
-                                    {"internalType": "address", "name": "token", "type": "address"},
-                                    {"internalType": "uint256", "name": "identifierOrCriteria", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "startAmount", "type": "uint256"},
-                                    {"internalType": "uint256", "name": "endAmount", "type": "uint256"},
-                                    {"internalType": "address payable", "name": "recipient", "type": "address"}
-                                ], "internalType": "struct ConsiderationItem[]", "name": "consideration", "type": "tuple[]"},
-                                {"internalType": "enum OrderType", "name": "orderType", "type": "uint8"},
-                                {"internalType": "uint256", "name": "startTime", "type": "uint256"},
-                                {"internalType": "uint256", "name": "endTime", "type": "uint256"},
-                                {"internalType": "bytes32", "name": "zoneHash", "type": "bytes32"},
-                                {"internalType": "uint256", "name": "salt", "type": "uint256"},
-                                {"internalType": "bytes32", "name": "conduitKey", "type": "bytes32"},
-                                {"internalType": "uint256", "name": "totalOriginalConsiderationItems", "type": "uint256"}
-                            ],
-                            "internalType": "struct OrderComponents[]",
-                            "name": "orders",
-                            "type": "tuple[]"
-                        }],
-                        "name": "cancel",
-                        "outputs": [{"internalType": "bool", "name": "cancelled", "type": "bool"}],
-                        "stateMutability": "nonpayable",
-                        "type": "function"
-                    }];
-
-                    const cancelContract = new ethers.Contract(MARKETPLACE_ADDRESS, cancelABI, signer);
-                    const orderComponents = {
-                        offerer: oldListing.orderParameters.offerer,
-                        zone: oldListing.orderParameters.zone,
-                        offer: oldListing.orderParameters.offer,
-                        consideration: oldListing.orderParameters.consideration,
-                        orderType: oldListing.orderParameters.orderType,
-                        startTime: oldListing.orderParameters.startTime,
-                        endTime: oldListing.orderParameters.endTime,
-                        zoneHash: oldListing.orderParameters.zoneHash,
-                        salt: oldListing.orderParameters.salt,
-                        conduitKey: oldListing.orderParameters.conduitKey,
-                        totalOriginalConsiderationItems: oldListing.orderParameters.totalOriginalConsiderationItems
-                    };
-
-                    const cancelTx = await cancelContract.cancel([orderComponents]);
-                    await cancelTx.wait();
-                    showToast('Previous listing canceled', 'success');
-                } catch (error) {
-                    console.error('Error canceling old listing:', error);
-                    // Continue with new listing even if cancel fails
-                }
-            }
-        }
 
         createListingBtn.textContent = 'Waiting for confirmation...';
 
@@ -218,46 +419,33 @@ async function createListing() {
             }
         }
 
+        // Get updated counter after transaction
+        const updatedCounter = await counterContract.getCounter(userAddress);
+        console.log('Updated counter after listing creation:', updatedCounter.toString());
+
         createListingBtn.classList.remove('btn-loading');
         showToast('Listing created successfully!', 'success');
-
-        // Save listing data
-        const listingData = {
-            orderHash: orderHash,
-            orderParameters,
-            price: price,
-            seller: userAddress,
-            tokenId: tokenId.toString(),
-            lockedAmount: formattedLockedAmount,
-            createdAt: Date.now(),
-            txHash: tx.hash,
-            active: true
-        };
-
-        // Save to localStorage
-        const listings = JSON.parse(localStorage.getItem('veybListings') || '[]');
-
-        // Deactivate all previous listings from this seller (since veYB NFT is unique per address)
-        const updatedListings = listings.map(l => {
-            if (l.seller.toLowerCase() === userAddress.toLowerCase()) {
-                l.active = false;
-            }
-            return l;
-        });
-
-        // Add new listing
-        updatedListings.push(listingData);
-        localStorage.setItem('veybListings', JSON.stringify(updatedListings));
-
-        // Save seller's own listing
-        localStorage.setItem(`myListing_${userAddress}`, JSON.stringify(listingData));
 
         createListingBtn.disabled = true;
         createListingBtn.textContent = '✓ Listed Successfully';
 
-        // Refresh to show seller dashboard
+        console.log('Listing created successfully:', orderHash);
+
+        // Clear cache and switch to My Listings tab
+        if (typeof cachedSellerListings !== 'undefined') {
+            cachedSellerListings = null;
+        }
+        if (typeof cachedMarketplaceListings !== 'undefined') {
+            cachedMarketplaceListings = null;
+        }
+        if (typeof cachedBlockchainEvents !== 'undefined') {
+            cachedBlockchainEvents = null;
+        }
+
         setTimeout(() => {
-            window.location.reload();
+            if (typeof switchTab === 'function') {
+                switchTab('mylistings');
+            }
         }, 2000);
 
     } catch (error) {
@@ -280,6 +468,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const priceInput = document.getElementById('priceInput');
     const durationInput = document.getElementById('durationInput');
     const createListingBtn = document.getElementById('createListingBtn');
+    const pricingModeTotal = document.getElementById('pricingModeTotal');
+    const pricingModePerVeYB = document.getElementById('pricingModePerVeYB');
 
     if (priceInput) {
         priceInput.addEventListener('input', updatePricePreview);
@@ -291,5 +481,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (createListingBtn) {
         createListingBtn.addEventListener('click', createListing);
+    }
+
+    if (pricingModeTotal) {
+        pricingModeTotal.addEventListener('change', updatePricingMode);
+    }
+
+    if (pricingModePerVeYB) {
+        pricingModePerVeYB.addEventListener('change', updatePricingMode);
     }
 });

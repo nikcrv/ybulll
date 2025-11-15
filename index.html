@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YBull veYB NFT Marketplace</title>
+    <link rel="icon" type="image/png" href="favico.png">
     <link rel="stylesheet" href="styles.css">
     <script src="ethers.min.js"></script>
 </head>
@@ -12,7 +13,7 @@
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-brand">
-                <span class="brand-name">YBull</span>
+                <span class="brand-name"><span class="brand-y">Y</span>Bull</span>
             </div>
             <div class="nav-actions">
                 <button class="btn-connect" id="connectWallet">
@@ -20,7 +21,16 @@
                 </button>
                 <div class="wallet-connected" id="walletConnected" style="display: none;">
                     <div class="wallet-info">
-                        <span class="wallet-balance" id="walletBalance">0.00 ETH</span>
+                        <div class="wallet-stats">
+                            <span class="wallet-balance" id="walletBalance">0.00 ETH</span>
+                            <span class="wallet-lock" id="walletLockAmount">-</span>
+                            <span class="wallet-permalock" id="walletPermalockBadge" style="display: none;">
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                    <path d="M7 1L9 5H13L9.5 7.5L11 12L7 9.5L3 12L4.5 7.5L1 5H5L7 1Z" fill="currentColor"/>
+                                </svg>
+                                Permalock
+                            </span>
+                        </div>
                         <button class="wallet-address-btn" id="walletAddressBtn">
                             <span id="walletAddress">0x0000...0000</span>
                         </button>
@@ -34,8 +44,35 @@
     <main class="main-content">
         <section class="hero-section">
             <div class="hero-container">
-                <h1 class="hero-title">veYB NFT Marketplace</h1>
-                <p class="hero-subtitle">List and trade your veYB tokens</p>
+                <img src="sYBull.png" alt="YBull Logo" class="hero-logo">
+                <h1 class="hero-title"><span class="hero-ve">ve</span>YB NFT Marketplace</h1>
+                <p class="hero-subtitle">List and trade your veYB without any fees</p>
+            </div>
+        </section>
+
+        <!-- Navigation Tabs -->
+        <section class="tabs-section" id="tabsSection" style="display: none;">
+            <div class="section-container">
+                <div class="tabs-nav">
+                    <button class="tab-btn active" data-tab="marketplace" onclick="switchTab('marketplace')">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M3 3H17V7H3V3ZM3 9H17V13H3V9ZM3 15H17V19H3V15Z" fill="currentColor"/>
+                        </svg>
+                        Marketplace
+                    </button>
+                    <button class="tab-btn" data-tab="mylistings" onclick="switchTab('mylistings')">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M10 2L2 7V18H8V12H12V18H18V7L10 2Z" fill="currentColor"/>
+                        </svg>
+                        My Listings
+                    </button>
+                    <button class="tab-btn" data-tab="create" onclick="switchTab('create')">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M10 4V16M4 10H16" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                        Create Listing
+                    </button>
+                </div>
             </div>
         </section>
 
@@ -79,37 +116,73 @@
                             Set your price and create a listing on the marketplace. Your veYB NFT will be available for purchase.
                         </p>
 
+                        <div class="info-panel" style="margin-bottom: 24px; background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.3);">
+                            <div class="info-item">
+                                <span class="info-label">You are selling:</span>
+                                <span class="info-value" id="sellingAmount" style="color: var(--primary); font-weight: 600;">- veYB</span>
+                            </div>
+                        </div>
+
                         <div class="form-group">
-                            <label for="priceInput" class="form-label">Price (ETH)</label>
+                            <label class="form-label">Pricing Mode</label>
+                            <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; padding: 12px; background: var(--card-bg); border: 2px solid var(--border); border-radius: 8px; transition: all 0.2s;">
+                                    <input type="radio" name="pricingMode" value="perVeYB" id="pricingModePerVeYB" checked style="width: 18px; height: 18px; cursor: pointer;">
+                                    <div>
+                                        <div style="font-weight: 500; color: var(--text-primary);">Price per veYB</div>
+                                        <div style="font-size: 12px; color: var(--text-secondary);">Price for 1 veYB</div>
+                                    </div>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; padding: 12px; background: var(--card-bg); border: 2px solid var(--border); border-radius: 8px; transition: all 0.2s;">
+                                    <input type="radio" name="pricingMode" value="total" id="pricingModeTotal" style="width: 18px; height: 18px; cursor: pointer;">
+                                    <div>
+                                        <div style="font-weight: 500; color: var(--text-primary);">Total Price</div>
+                                        <div style="font-size: 12px; color: var(--text-secondary);">Price for all veYB</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="priceInput" class="form-label" id="priceInputLabel">Price per veYB (YB)</label>
                             <div class="input-wrapper">
                                 <input
                                     type="number"
                                     id="priceInput"
                                     class="form-input"
-                                    placeholder="0.0005"
-                                    step="0.0001"
+                                    placeholder="0.9"
+                                    step="0.000001"
                                     min="0"
                                 />
-                                <span class="input-suffix">ETH</span>
+                                <span class="input-suffix">YB</span>
                             </div>
-                            <span class="form-hint">Minimum: 0.0001 ETH</span>
                         </div>
 
                         <div class="form-group">
                             <label for="durationInput" class="form-label">Listing Duration</label>
                             <select id="durationInput" class="form-select">
+                                <option value="0.042">1 Hour</option>
+                                <option value="0.125">3 Hours</option>
+                                <option value="0.5">12 Hours</option>
+                                <option value="1">1 Day</option>
+                                <option value="3">3 Days</option>
                                 <option value="7">7 Days</option>
                                 <option value="14">14 Days</option>
                                 <option value="30" selected>30 Days</option>
                                 <option value="60">60 Days</option>
                                 <option value="90">90 Days</option>
+                                <option value="indefinite">Indefinite</option>
                             </select>
                         </div>
 
                         <div class="listing-preview" id="listingPreview">
                             <div class="preview-item">
-                                <span class="preview-label">You will receive:</span>
-                                <span class="preview-value" id="receiveAmount">0 ETH</span>
+                                <span class="preview-label">Total price:</span>
+                                <span class="preview-value" id="totalPricePreview">0 YB</span>
+                            </div>
+                            <div class="preview-item">
+                                <span class="preview-label">Price per veYB:</span>
+                                <span class="preview-value" id="pricePerVeYBPreview">0 YB</span>
                             </div>
                             <div class="preview-item">
                                 <span class="preview-label">Listing expires:</span>
@@ -144,8 +217,12 @@
                         </span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Locked YB Amount:</span>
+                        <span class="info-label">Locked veYB Amount:</span>
                         <span class="info-value" id="nftBalance">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Permalock Status:</span>
+                        <span class="info-value" id="permalockStatus">-</span>
                     </div>
                 </div>
             </div>
@@ -162,11 +239,43 @@
         <!-- Marketplace (for buyers) -->
         <section class="marketplace-section" id="marketplaceSection" style="display: none;">
             <div class="section-container">
-                <h2 class="section-title">Available veYB NFTs</h2>
+                <div class="marketplace-controls">
+                    <h2 class="section-title" style="margin-bottom: 0;">Available veYB NFTs</h2>
+                    <div style="display: flex; align-items: center; gap: 16px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="color: var(--text-secondary); font-size: 13px; font-weight: 500;">Sort:</label>
+                            <select id="sortSelect">
+                                <option value="pricePerVeYB" selected>Price per veYB</option>
+                                <option value="price">Total Price</option>
+                                <option value="amount">veYB Amount</option>
+                                <option value="date">Date Listed</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="color: var(--text-secondary); font-size: 13px; font-weight: 500;">Scan:</label>
+                            <select id="scanDepthSelect">
+                                <option value="100000" selected>14 days</option>
+                                <option value="200000">1 month</option>
+                                <option value="500000">70 days</option>
+                                <option value="1000000">5 months</option>
+                                <option value="2000000">10 months</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
                 <div id="marketplaceListings"></div>
             </div>
         </section>
     </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-container">
+            <p class="footer-text">
+                Beta Version • Uses <a href="https://etherscan.io/address/0x0000000000000068F116a894984e2DB1123eB395" target="_blank" class="footer-link">Seaport 1.6</a> smart contract • Always verify the contract you're interacting with before signing
+            </p>
+        </div>
+    </footer>
 
     <!-- Wallet Selection Modal -->
     <div class="modal" id="walletModal" style="display: none;">
@@ -190,8 +299,34 @@
     <!-- Notification Toast -->
     <div class="toast" id="toast"></div>
 
+    <!-- Permalock Required Modal -->
+    <div class="modal-overlay" id="permalockModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-icon">⚠️</div>
+            <h3 class="modal-title" id="permalockModalTitle">Permalock Required</h3>
+            <p class="modal-message" id="permalockModalMessage"></p>
+            <div class="modal-actions">
+                <button class="btn-secondary" id="permalockModalCancel">Cancel</button>
+                <button class="btn-primary" id="permalockModalConfirm">Go to Lock Page</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div class="modal-overlay" id="successModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-icon">✓</div>
+            <h3 class="modal-title">Purchase Successful!</h3>
+            <p class="modal-message" id="successModalMessage"></p>
+            <div class="modal-actions">
+                <button class="btn-primary" id="successModalClose">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
     <script src="listing.js"></script>
     <script src="marketplace.js"></script>
+    <script src="button-gradient.js"></script>
 </body>
 </html>
